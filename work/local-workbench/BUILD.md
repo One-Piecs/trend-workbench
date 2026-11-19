@@ -32,4 +32,4 @@ python3 work/local-workbench/macos/package_app.py --launcher .build/TrendWorkben
 python3 work/local-workbench/macos/verify_archive.py dist/Trend-Workbench-macOS-arm64.zip
 ```
 
-两端的验收脚本都会解压生成的 ZIP，检查资源、本地服务启动与关窗后的退出。添加 `--check-feed` 可同时验证一次在线 K 线请求。
+两端的验收脚本都会解压生成的 ZIP，检查资源、本地服务启动与关窗后的退出。添加 `--check-feed` 可按工作台默认深度请求 XRP/USDT 和 BTC/USDT 小时线，检查返回的交易对、报价币、价格和最近一根 K 线时间。

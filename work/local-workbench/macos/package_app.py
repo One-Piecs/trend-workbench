@@ -26,7 +26,12 @@ INSTRUCTIONS = """趋势判断工作台 · macOS 版
 工作台在独立窗口运行，已包含 Apple 芯片版运行环境。查看在线行情需要网络。
 关闭工作台窗口或按 ⌘Q 会退出程序和本地行情服务。自选、语言和预判记录保存在这台 Mac。
 
-本测试版未经 Apple 公证。首次启动的系统提示说明可查阅 Apple 支持：
+Mac 首次打开
+这个版本采用临时签名，尚未经 Apple 公证。如系统提示无法验证开发者，请先确认应用来自本项目的 GitHub 发行页。
+尝试打开一次后，到「系统设置」→「隐私与安全性」，在「趋势判断工作台」的提示旁点「仍要打开」，按系统提示确认。
+开发者已在 Mac mini M4 上实测打开 v1.3.0。
+GitHub 发行页  https://github.com/nhovongoc0-max/trend-workbench/releases
+Apple 关于首次打开的说明
 https://support.apple.com/zh-cn/102445
 
 开发者（DeFi狙击手）  https://x.com/bi_9527zx
@@ -109,7 +114,7 @@ def main():
             "CFBundleExecutable": LAUNCHER, "CFBundleName": NAME, "CFBundleDisplayName": NAME,
             "CFBundleIdentifier": "app.trendworkbench.desktop", "CFBundleIconFile": "Workbench.icns",
             "CFBundleInfoDictionaryVersion": "6.0", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.3.0", "CFBundleVersion": "1.3.0",
+            "CFBundleShortVersionString": "1.3.1", "CFBundleVersion": "1.3.1",
             "LSMinimumSystemVersion": "15.0", "LSApplicationCategoryType": "public.app-category.finance",
             "NSHighResolutionCapable": True, "NSPrincipalClass": "NSApplication",
             "NSAppTransportSecurity": {"NSExceptionDomains": {"127.0.0.1": {"NSExceptionAllowsInsecureHTTPLoads": True}}},

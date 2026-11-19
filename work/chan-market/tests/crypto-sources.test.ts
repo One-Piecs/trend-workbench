@@ -38,6 +38,8 @@ test('USD-only listings are never relabeled as BTCUSDT',async()=>{
   const client=createCryptoClient(async url=>{
     if(url.includes('binance'))return reply({symbols:[{symbol:'BTCUSD',status:'TRADING',baseAsset:'BTC',quoteAsset:'USD'}]});
     if(url.includes('okx'))return reply({code:'0',data:[{state:'live',baseCcy:'BTC',quoteCcy:'USD',instId:'BTC-USD'}]});
+    if(url.includes('bitget'))return reply(bitgetDirectory('USD'));
+    if(url.includes('bybit'))return reply({retCode:0,result:{category:'spot',list:[{symbol:'BTCUSD',baseCoin:'BTC',quoteCoin:'USD',status:'Trading'}]}});
     return reply({error:[],result:{XXBTZUSD:{altname:'XBTUSD',wsname:'XBT/USD',status:'online'}}});
   },now);
   await assert.rejects(client.getCryptoCandles('BTCUSDT','1h'),e=>e instanceof CryptoDataError&&e.status===404);
@@ -92,7 +94,7 @@ test('cancelling one chart does not poison a shared directory request for anothe
     return reply(Array.from({length:35},(_,i)=>[now()-3600000+i*60000,'100','102','99','101','2',now()-3540000+i*60000]));
   },now);
   const controller=new AbortController();
-  const first=client.getCryptoCandles('BTCUSDT','1m',100,controller.signal);
+  const first=client.getCryptoCandles('ETHUSDT','1m',100,controller.signal);
   const canceled=assert.rejects(first,e=>e instanceof DOMException&&e.name==='AbortError');
   const second=client.getCryptoCandles('ETHUSDT','1m',100);
   controller.abort();
@@ -162,4 +164,82 @@ test('native monthly directories cannot substitute USD for requested USDT',async
     return reply({error:[],result:{XXBTZUSD:{altname:'XBTUSD',wsname:'XBT/USD',status:'online'}}});
   },now);
   await assert.rejects(client.getCryptoCandles('BTCUSDT','1M'),e=>e instanceof CryptoDataError&&e.status===404);
+});
+
+test('after a temporary network outage the next XRP or BTC chart loads a small exact listing immediately',async()=>{
+  let offline=true;
+  const lookups:string[]=[];
+  const client=createCryptoClient(async input=>{
+    const url=new URL(input);
+    if(offline){
+      if(url.hostname.includes('kraken'))throw new TypeError('network disconnected');
+      return reply({},503);
+    }
+    assert.equal(url.hostname,'data-api.binance.vision');
+    const symbol=url.searchParams.get('symbol')!;
+    if(url.pathname.endsWith('exchangeInfo')){
+      assert.equal(url.searchParams.get('showPermissionSets'),'false');
+      lookups.push(symbol);
+      return reply({symbols:[{symbol,status:'TRADING',baseAsset:symbol.slice(0,-4),quoteAsset:'USDT'}]});
+    }
+    assert.equal(url.searchParams.get('interval'),'1h');
+    const end=now()-30000,rows=Array.from({length:35},(_,i)=>[end-i*3600000,'1','2','0.9','1.15','7',end-(i-1)*3600000-1]);
+    return reply(rows);
+  },now);
+  await assert.rejects(client.getCryptoCandles('XRPUSDT','1h',35),e=>e instanceof CryptoDataError&&e.status===502);
+  offline=false;
+  for(const symbol of ['XRPUSDT','BTCUSDT']){
+    const data=await client.getCryptoCandles(symbol,'1h',35);
+    assert.equal(data.instrument.symbol,symbol);assert.equal(data.candles.length,35);
+  }
+  assert.deepEqual(lookups,['XRPUSDT','BTCUSDT']);
+});
+
+test('a real network-route change clears access failures while preserving an explicit rate-limit deadline',async()=>{
+  let clock=now(),attempts=0;const client=createCryptoClient(async url=>{
+    if(!url.includes('binance'))return reply({},403);
+    attempts++;
+    return attempts===1?reply({},451):new Response(null,{status:429,headers:{'Retry-After':'90'}});
+  },()=>clock);
+  const fetchChart=()=>client.getCryptoCandles('XRPUSDT','1h',35);
+  await assert.rejects(fetchChart(),/HTTP 451/);
+  await assert.rejects(fetchChart(),/HTTP 451/);assert.equal(attempts,1);
+  client.resetMarketNetworkFailures();
+  await assert.rejects(fetchChart(),/HTTP 429/);assert.equal(attempts,2);
+  client.resetMarketNetworkFailures();clock+=89000;
+  await assert.rejects(fetchChart(),/HTTP 429/);assert.equal(attempts,2);
+  clock+=1000;await assert.rejects(fetchChart(),/HTTP 429/);assert.equal(attempts,3);
+});
+
+test('XRP 1h can use either independent native spot backup at the correct interval and currency',async()=>{
+  for(const venue of ['bitget','bybit']){
+    const client=createCryptoClient(async input=>{
+      const url=new URL(input);
+      if(!url.hostname.includes(venue))return reply({},403);
+      assert.equal(url.searchParams.get('symbol'),'XRPUSDT');
+      if(url.pathname.includes('/symbols'))return reply({code:'00000',data:[{status:'online',symbol:'XRPUSDT',baseCoin:'XRP',quoteCoin:'USDT'}]});
+      if(url.pathname.includes('instruments-info'))return reply({retCode:0,result:{category:'spot',list:[{status:'Trading',symbol:'XRPUSDT',baseCoin:'XRP',quoteCoin:'USDT'}]}});
+      assert.equal(url.searchParams.get(venue==='bitget'?'granularity':'interval'),venue==='bitget'?'1h':'60');
+      const rows=Array.from({length:800},(_,i)=>[String(now()-30000-i*3600000),'1.25','1.28','1.23','1.27','31']);
+      return venue==='bitget'?reply({code:'00000',data:rows}):reply({retCode:0,result:{category:'spot',symbol:'XRPUSDT',list:rows}});
+    },now);
+    const result=await client.getCryptoCandles('XRPUSDT','1h',800);
+    assert.equal(result.instrument.exchange.toLowerCase(),venue);
+    assert.equal(result.instrument.currency,'USDT');assert.equal(result.candles.length,800);
+    assert.equal(result.candles.at(-1)?.closed,false);assert.ok(result.candles.slice(0,-1).every(c=>c.closed));
+  }
+});
+
+test('unknown listing is distinct from an upstream returning a generic 404',async()=>{
+  let gateway=false;
+  const client=createCryptoClient(async url=>{
+    if(url.includes('binance'))return reply({code:-1121},400);
+    if(url.includes('okx'))return reply(okxDirectory());
+    if(url.includes('kraken'))return reply({error:['EQuery:Unknown asset pair']});
+    if(url.includes('bitget'))return reply({code:'40034'},400);
+    return gateway?reply({},404):reply({retCode:0,result:{category:'spot',list:[]}});
+  },now);
+  await assert.rejects(client.getCryptoCandles('UNLISTEDUSDT','1h'),e=>e instanceof CryptoDataError&&e.status===404);
+  gateway=true;
+  await assert.rejects(client.getCryptoCandles('UNAVAILABLEUSDT','1h'),e=>e instanceof CryptoDataError&&e.status===502);
 });

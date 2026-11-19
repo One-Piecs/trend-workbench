@@ -97,26 +97,66 @@ export function resolveNetworkProxy(env={},settings=null){
   return {mode,proxyEnv,unsupported};
 }
 
-/** Node 24.14+ applies this to both fetch and http(s). Keep configuration local
- * to this process: do not write process.env or Windows/global network settings.
- * https://nodejs.org/download/release/v24.14.0/docs/api/http.html#httpsetglobalproxyfromenvproxyenv */
-export async function configureLocalNetwork(options={}){
-  const env=options.env??process.env;
+function applyProxyConfig(config,install){
+  if((config.mode==='windows-system'||config.mode==='macos-system')&&config.proxyEnv.HTTP_PROXY&&!config.proxyEnv.HTTPS_PROXY){
+    // Node's global fetch dispatcher falls back to HTTP_PROXY for HTTPS.
+    // A manual HTTP-only system route applies solely to HTTP.
+    const previous=http.globalAgent;
+    const agent=new http.Agent({keepAlive:true,proxyEnv:config.proxyEnv});
+    http.globalAgent=agent;
+    return ()=>{http.globalAgent=previous;};
+  }
+  return install(config.proxyEnv);
+}
+
+/** Re-read the system route on demand while the window is open. Node 24's
+ * setGlobalProxyFromEnv({NO_PROXY:...}) is a no-op when switching to direct.
+ * Its previous restore function is required to release the old dispatcher. */
+export function createNetworkRouteMonitor(options={}){
+  const env=options.env??process.env,platform=options.platform??process.platform;
   const explicit=['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'].some(name=>owns(env,name)||owns(env,name.toLowerCase()));
-  const platform=options.platform??process.platform;
-  const readSystem=platform==='win32'?readWindowsProxySettings:platform==='darwin'?readMacProxySettings:null;
-  const settings=!explicit&&String(env.NODE_USE_ENV_PROXY)!=='0'&&readSystem
-    ?await (options.readSettings??readSystem)():null;
-  const config=resolveNetworkProxy(env,settings);
+  const systemReader=platform==='win32'?readWindowsProxySettings:platform==='darwin'?readMacProxySettings:null;
+  const readSettings=!explicit&&String(env.NODE_USE_ENV_PROXY)!=='0'&&systemReader?(options.readSettings??systemReader):null;
   const install=options.installProxy??http.setGlobalProxyFromEnv;
-  if(typeof install!=='function')return {mode:config.mode,applied:false,reason:'unsupported-runtime'};
-  try {
-    if(config.mode==='macos-system'&&config.proxyEnv.HTTP_PROXY&&!config.proxyEnv.HTTPS_PROXY){
-      // Node fetch otherwise falls back to HTTP_PROXY for HTTPS. All market
-      // endpoints are HTTPS; keep those direct when macOS only enables Web (HTTP).
-      http.globalAgent=new http.Agent({keepAlive:true,proxyEnv:config.proxyEnv});
-    }else install(config.proxyEnv);
-    // Return only safe metadata; never expose endpoints, passwords or bypass lists.
-    return {mode:config.mode,applied:true,proxied:!!(config.proxyEnv.HTTP_PROXY||config.proxyEnv.HTTPS_PROXY),unsupported:!!config.unsupported};
-  }catch{return {mode:config.mode,applied:false,reason:'invalid-proxy-configuration'};}
+  const now=options.now??Date.now;
+  let revision=0,signature,restore,pending,status,previousConfig;
+  let lastCheck=-Infinity;
+  async function update(){
+    lastCheck=now();
+    const settings=readSettings?await readSettings():null;
+    // A transient OS read failure must not silently drop a known network route.
+    if(readSettings&&settings===null&&previousConfig)return {revision,status};
+    const config=resolveNetworkProxy(env,settings);
+    const nextSignature=JSON.stringify(config);
+    if(nextSignature===signature)return {revision,status};
+    if(typeof install!=='function'){
+      status={mode:config.mode,applied:false,reason:'unsupported-runtime'};
+      return {revision,status};
+    }
+    if(typeof restore==='function')restore();
+    try{
+      restore=applyProxyConfig(config,install);
+    }catch{
+      restore=previousConfig?applyProxyConfig(previousConfig,install):undefined;
+      status={mode:config.mode,applied:false,reason:'invalid-proxy-configuration'};
+      return {revision,status};
+    }
+    previousConfig=config;
+    signature=nextSignature;
+    status={mode:config.mode,applied:true,proxied:!!(config.proxyEnv.HTTP_PROXY||config.proxyEnv.HTTPS_PROXY),unsupported:!!config.unsupported};
+    revision++;
+    if(revision>1)options.onRouteChange?.();
+    return {revision,status};
+  }
+  return async function checkRoute(afterMarketFailure=false){
+    if(pending)return pending;
+    const minInterval=afterMarketFailure?3000:30000;
+    if(status&&(!readSettings||now()-lastCheck<minInterval))return {revision,status};
+    pending=update().finally(()=>{pending=undefined;});
+    return pending;
+  };
+}
+
+export async function configureLocalNetwork(options={}){
+  return (await createNetworkRouteMonitor(options)()).status;
 }

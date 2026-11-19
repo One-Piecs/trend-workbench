@@ -146,6 +146,8 @@ test('HTTP 404 and an unknown crypto symbol remain errors',async()=>{
     if(url.includes('exchangeInfo'))return new Response(JSON.stringify({symbols:[{symbol:'BTCUSDT',baseAsset:'BTC',quoteAsset:'USDT',status:'TRADING',isSpotTradingAllowed:true}]}));
     if(url.includes('okx.com'))return new Response(JSON.stringify({code:'0',data:[{instId:'BTC-USDT',baseCcy:'BTC',quoteCcy:'USDT',state:'live'}]}));
     if(url.includes('kraken.com'))return new Response(JSON.stringify({error:[],result:{XBTUSDT:{altname:'XBTUSDT',wsname:'XBT/USDT',status:'online'}}}));
+    if(url.includes('bitget'))return Response.json({code:'00000',data:[]});
+    if(url.includes('bybit'))return Response.json({retCode:0,result:{category:'spot',list:[]}});
     return new Response('{}',{status:404});
   };
   try {

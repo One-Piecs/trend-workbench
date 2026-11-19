@@ -2,12 +2,23 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, resolve, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MarketError, getCandles, searchInstruments, parseMarket, parseSearchMarket, parseInterval } from './market-data.mjs';
-import { configureLocalNetwork } from './network-bootstrap.mjs';
+import { MarketError, getCandles, searchInstruments, parseMarket, parseSearchMarket, parseInterval, resetMarketNetworkFailures } from './market-data.mjs';
+import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
 
 // Market adapters perform no requests at module load. Configure the existing
 // user network route before starting the listener or making any market request.
-await configureLocalNetwork();
+const checkNetworkRoute=createNetworkRouteMonitor({onRouteChange:resetMarketNetworkFailures});
+await checkNetworkRoute();
+
+async function marketRequest(load){
+  const route=await checkNetworkRoute();
+  try{return await load();}catch(error){
+    if(error instanceof MarketError&&error.status<500)throw error;
+    // Retry once if the OS route changed during the failed request.
+    if((await checkNetworkRoute(true)).revision===route.revision)throw error;
+    return load();
+  }
+}
 
 const appRoot=dirname(fileURLToPath(import.meta.url));
 const publicRoot=resolve(appRoot,'public');
@@ -53,7 +64,8 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/search'){
       const q=url.searchParams.get('q')||'';
       if(q.length>60)throw new MarketError('搜索内容最多60个字符。',400);
-      return json(res,200,await searchInstruments(parseSearchMarket(url.searchParams.get('market')),q));
+      const market=parseSearchMarket(url.searchParams.get('market'));
+      return json(res,200,await marketRequest(()=>searchInstruments(market,q)));
     }
     if(url.pathname==='/api/candles'){
       const market=parseMarket(url.searchParams.get('market'));
@@ -62,7 +74,7 @@ const server=http.createServer(async(req,res)=>{
       if(!symbol)throw new MarketError('缺少标的代码。',400);
       const limit=Number(url.searchParams.get('limit')||'800');
       if(!Number.isInteger(limit)||limit<1||limit>2000)throw new MarketError('K线数量须为1至2000。',400);
-      return json(res,200,await getCandles(market,symbol,interval,limit));
+      return json(res,200,await marketRequest(()=>getCandles(market,symbol,interval,limit)));
     }
     if(url.pathname.startsWith('/api/'))return json(res,404,{error:'Unknown endpoint'});
     let decoded;

@@ -1,5 +1,6 @@
 import type { Candle, Instrument, Interval, Market, MarketData } from './market-types';
 import { getCryptoCandles, searchCrypto, CryptoDataError } from './crypto-sources.ts';
+export { resetMarketNetworkFailures } from './crypto-sources.ts';
 import { aggregateEquityFourHour } from './equity-four-hour.ts';
 import { chooseEquityHistory } from './equity-history.ts';
 import { withHistoryCoverage } from './history-coverage.ts';

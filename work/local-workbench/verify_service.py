@@ -6,6 +6,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 
 
 def read_local(port, path):
@@ -46,11 +47,17 @@ def check_server(resources, host_node, check_feed):
             report = json.loads(read_local(port, "/forecast-validation.json"))
             assert report == {"available": False, "matchesInstalledBuild": False}
             if check_feed:
-                data = json.loads(read_local(port, "/api/candles?market=crypto&symbol=BTCUSDT&interval=1h&limit=64"))
-                candles = data["candles"]
-                assert data["instrument"]["symbol"] == "BTCUSDT" and data["interval"] == "1h"
-                assert candles and all(c["close"] > 0 for c in candles)
-                print(f"Received {len(candles)} BTCUSDT hourly candles")
+                for symbol in ("XRPUSDT", "BTCUSDT"):
+                    data = json.loads(read_local(port, f"/api/candles?market=crypto&symbol={symbol}&interval=1h&limit=800"))
+                    candles = data["candles"]
+                    assert data["instrument"]["symbol"] == symbol and data["interval"] == "1h"
+                    assert data["instrument"]["currency"] == "USDT" and data["source"]
+                    assert len(candles) >= 100, f"Insufficient hourly history for {symbol}"
+                    times = [bar["time"] for bar in candles]
+                    assert times == sorted(set(times)) and all(t % 3600 == 0 for t in times)
+                    assert -60 <= time.time() - times[-1] <= 7200, f"Stale hourly history for {symbol}"
+                    assert all(0 < c["low"] <= min(c["open"], c["close"]) <= max(c["open"], c["close"]) <= c["high"] for c in candles)
+                    print(f"Received {len(candles)} recent {symbol} hourly candles")
         finally:
             session.close()
             lease.close()

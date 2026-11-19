@@ -1,8 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { marketDisplayText, marketVenueSuffix, translateMarketText, translateInstrumentName } from '../lib/market-i18n.ts';
+import { marketDisplayText, marketLoadErrorText, marketVenueSuffix, translateMarketText, translateInstrumentName } from '../lib/market-i18n.ts';
 
 for (const language of ['zh', 'en'] as const) {
+  test(`a finished spot request summarizes all failed providers once (${language})`, () => {
+    const prefix = '现货行情暂不可用：';
+    const unavailable = marketLoadErrorText(prefix + 'Kraken 暂不可用，正在切换独立行情源。；OKX 暂不可用，正在切换独立行情源。请稍后重试。', language);
+    assert.doesNotMatch(unavailable, /kraken|okx|切换|switching/i);
+    const mixed = marketLoadErrorText(prefix + 'Kraken 返回 HTTP 429；OKX 返回 HTTP 429；Binance 未收录该交易对。请稍后重试。', language);
+    assert.equal(mixed.match(/HTTP 429/g)?.length, 1);
+    assert.doesNotMatch(mixed, /未收录|does not list|none of the queried/i);
+    const missing = marketLoadErrorText(prefix + 'Kraken 未收录该交易对；OKX 未收录该交易对。请稍后重试。', language);
+    assert.match(missing, /未收录|lists this trading pair/);
+    assert.equal(marketLoadErrorText('Failed to fetch', language), language === 'zh' ? '未能连接行情服务。' : 'Could not connect to the market data service.');
+    assert.equal(marketLoadErrorText('signal timed out', language), language === 'zh' ? '行情请求超时。' : 'The market data request timed out.');
+  });
+
   test(`instrument and search subtitles omit hidden venues and separators (${language})`, () => {
     for (const venue of ['Binance', 'okx', '币安', '欧易', '', undefined]) {
       assert.equal(marketVenueSuffix(venue, language), '');

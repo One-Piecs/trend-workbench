@@ -9,7 +9,7 @@ import {planSessionKey,readPlanSession} from '@/lib/plan-session';
 import {LanguageProvider,useLanguage} from '@/lib/language';
 import {WORKBENCH_BRAND} from '@/lib/workbench-brand';
 import {translateAnalysis} from '@/lib/analysis-i18n';
-import {marketDisplayText,marketVenueSuffix,translateInstrumentName} from '@/lib/market-i18n';
+import {marketDisplayText,marketLoadErrorText,marketVenueSuffix,translateInstrumentName} from '@/lib/market-i18n';
 import TradeSetups from '@/components/trade-setups';
 import ConfluencePanel from '@/components/confluence-panel';
 import {createChartFeedController,type ChartSnapshot} from '@/lib/market-context-loader';
@@ -98,7 +98,9 @@ function HomeContent(){
   const fetchData=useCallback(async(background=false)=>{
     if(!background){
       cancelPendingImport();
-      setLoading(true);setSnapshot(null);setFeedError(null);setReplay(null);setPlaying(false);
+      // Keep the last matching candles and any known failure until fresh data arrives.
+      // The selection guard above already excludes another instrument, interval or CSV.
+      setLoading(true);setReplay(null);setPlaying(false);
     }
     await chartFeed.load({market:selected.market,symbol:selected.symbol,interval,background,
       onSnapshot:result=>{
@@ -135,10 +137,9 @@ function HomeContent(){
   const analysisContext=useMemo(()=>{
     if(!data||!snapshot)return undefined;
     let higher=snapshot.higher;
-    // Replay aborts live requests. Do not leave an aborted parent labelled as loading forever.
-    if(replay!==null&&higher.status==='loading')higher={interval:higher.interval,status:'error'};
+    if((replay!==null||error)&&higher.status==='loading')higher={interval:higher.interval,status:'error'};
     return {market:data.instrument.market,symbol:data.instrument.symbol,interval:data.interval,source:data.source,adjustment:data.adjustment,higher};
-  },[data,snapshot,replay]);
+  },[data,snapshot,replay,error]);
   const pendingContext=analysisContext?.higher.status==='loading';
   const rawAnalysis=useMemo<Analysis|null>(()=>{
     if(candles.length<3||pendingContext)return null;
@@ -210,7 +211,7 @@ function HomeContent(){
           <span>{t('社区交流','Community')}</span>
         </a>
       </nav>
-      <div className="top-right"><button type="button" className="top-refresh" disabled={loading||imported} aria-busy={loading} aria-label={t('刷新行情','Refresh market data')} title={imported?t('本地导入数据无需在线刷新','Imported data does not need an online refresh'):t('刷新当前标的行情和分析','Refresh this instrument and its analysis')} onClick={()=>void fetchData()}><RefreshCw size={17} className={loading?'spin':''} aria-hidden="true"/><span>{loading?t('刷新中','Refreshing'):t('刷新行情','Refresh')}</span></button><span className={`connection ${error?'warning':''}`}><i/>{loading?t('连接中','Connecting'):error?t('行情源异常','Data source error'):imported?t('本地数据','Local data'):replay!==null?t('历史回放 · 刷新暂停','Replay · refresh paused'):t('公开行情 · 30s刷新','Public feed · 30s refresh')}</span><div className="language-switch" role="group" aria-label={t('界面语言','Interface language')}><button aria-pressed={language==='zh'} className={language==='zh'?'active':''} onClick={()=>setLanguage('zh')}>中文</button><button aria-pressed={language==='en'} className={language==='en'?'active':''} onClick={()=>setLanguage('en')}>EN</button></div><span className="avatar">{t('观','C')}</span></div>
+      <div className="top-right"><button type="button" className="top-refresh" disabled={loading||imported} aria-busy={loading} aria-label={t('刷新行情','Refresh market data')} title={imported?t('本地导入数据无需在线刷新','Imported data does not need an online refresh'):t('刷新当前标的行情和分析','Refresh this instrument and its analysis')} onClick={()=>void fetchData()}><RefreshCw size={17} className={loading?'spin':''} aria-hidden="true"/><span>{loading?t('刷新中','Refreshing'):t('刷新行情','Refresh')}</span></button><span className={`connection ${error?'warning':''}`}><i/>{loading?t('连接中','Connecting'):error?(data?t('行情未更新','Refresh failed'):t('暂无行情','Data unavailable')):imported?t('本地数据','Local data'):replay!==null?t('历史回放 · 刷新暂停','Replay · refresh paused'):t('公开行情 · 30s刷新','Public feed · 30s refresh')}</span><div className="language-switch" role="group" aria-label={t('界面语言','Interface language')}><button aria-pressed={language==='zh'} className={language==='zh'?'active':''} onClick={()=>setLanguage('zh')}>中文</button><button aria-pressed={language==='en'} className={language==='en'?'active':''} onClick={()=>setLanguage('en')}>EN</button></div><span className="avatar">{t('观','C')}</span></div>
     </header>
     <aside className="sidebar">
       <div className="sidebar-heading"><span>{t("市场导航","Markets")}</span><Globe2 size={14}/></div>
@@ -227,12 +228,18 @@ function HomeContent(){
           <div className="quote-heading"><div className="instrument-identity"><span className={`asset-big ${market}`}>{selected.symbol==='BTCUSDT'?'₿':selected.symbol==='ETHUSDT'?'Ξ':selected.symbol.slice(0,1)}</span><div><button className="instrument-selector" onClick={()=>setSearchOpen(true)}>{displaySymbol(currentInstrument.symbol)}<ChevronDown size={15}/></button><p>{instrumentName(currentInstrument.name)}<span>{marketVenueSuffix(currentInstrument.exchange,language)}</span></p></div><button className={`favorite-button ${watchlist.some(w=>w.id===selected.id)?'selected':''}`} disabled={imported} onClick={()=>star(selected)} aria-label={t("切换当前标的自选","Toggle watchlist")}><Star size={17} fill={watchlist.some(w=>w.id===selected.id)?'currentColor':'none'}/></button></div><div className="quote-price"><strong>{last?priceText(last.close):'—'}</strong><span className={change>=0?'positive':'negative'}>{last&&prior?`${change>=0?'+':''}${change.toFixed(2)}%`:'—'} <small>{t("较前一根","vs previous bar")}</small></span></div></div>
           <div className="chart-toolbar"><div className="interval-buttons">{INTERVALS.map(i=><button key={i} className={interval===i?'active':''} disabled={!available.includes(i)||imported} onClick={()=>chooseInterval(i)}>{t(TIME_LABEL[i],({'1d':'Day','1w':'Week','1M':'Month'} as Partial<Record<Interval,string>>)[i]||i)}</button>)}</div><div className="chart-actions"><button className="icon-button" disabled={loading||imported} onClick={()=>void fetchData()} title={t("刷新行情","Refresh market data")} aria-label={t("刷新行情","Refresh market data")}><RefreshCw size={14} className={loading?'spin':''}/></button><button className="icon-button" disabled={!data} onClick={exportCSV} title={t("导出历史K线CSV","Export candle history as CSV")} aria-label={t("导出CSV","Export CSV")}><Download size={14}/></button><button className="icon-button" onClick={()=>fileInput.current?.click()} title={t("导入CSV","Import CSV")} aria-label={t("导入CSV","Import CSV")}><Upload size={14}/></button></div></div>
           <div className="layer-toolbar"><span><Layers3 size={12}/>{t('结构图层','Layers')}</span>{([['setups','点位预判','Outlook'],['strokes','笔','Strokes'],['segments','线段','Segments'],['centers','中枢','Centers'],['signals','历史信号','Signals'],['fractals','分型','Fractals']] as const).map(([key,zh,en])=><button type="button" key={key} aria-pressed={layers[key]} className={layers[key]?'active':''} onClick={()=>setLayers(l=>({...l,[key]:!l[key]}))}><span className="layer-state-indicator" aria-hidden="true">{layers[key]&&<Check size={13} strokeWidth={3}/>}</span>{t(zh,en)}</button>)}{layers.centers&&<CenterLayerSelector value={centerLayer} onChange={setCenterLayer}/>}</div>
-          {error&&<div className="data-error" role="alert"><AlertTriangle size={20}/><div><b>{t("未能取得该标的行情","Could not load this instrument")}</b><p>{mt(error)}</p><button onClick={()=>void fetchData()}>{t("重新加载","Reload")}</button><button onClick={()=>fileInput.current?.click()}>{t("导入自己的CSV","Import your CSV")}</button></div></div>}
-          <FeedStatus data={data} forecast={rawForecast} health={health} replay={replay!==null} imported={imported}/>
-          <TerminalChart key={`${selected.id}-${interval}-${imported}`} candles={candles} analysis={analysis} layers={layers} symbol={selected.symbol} interval={interval} loading={loading} forecast={rawForecast??undefined} dataFresh={displayForecast} strokeCenters={strokeCenters} centerLayer={centerLayer}/>
+          {error&&<div className="data-error" role="alert"><AlertTriangle size={20}/><div>
+            <b>{displaySymbol(selected.symbol)} · {t(TIME_LABEL[interval],interval)} · {data?t('行情更新失败','Refresh failed'):t('暂无行情','Data unavailable')}</b>
+            <p>{marketLoadErrorText(error,language)} {data&&receivedAt&&t(`图中保留 ${readableTime(receivedAt/1000,locale)} 获取的K线，新信号已暂停。`,`Showing candles fetched at ${readableTime(receivedAt/1000,locale)}. New signals are paused.`)}</p>
+            <button disabled={loading} onClick={()=>void fetchData()}>{loading?t('正在重试','Retrying'):t('重新加载','Retry')}</button><button onClick={()=>fileInput.current?.click()}>{t('导入CSV','Import CSV')}</button>
+          </div></div>}
+          {data&&(!error||replay!==null)&&<FeedStatus data={data} forecast={rawForecast} health={health} replay={replay!==null} imported={imported}/>}
+          {(data||!error)&&<>
+          <TerminalChart key={`${selected.id}-${interval}-${imported}`} candles={candles} analysis={analysis} layers={layers} symbol={selected.symbol} interval={interval} loading={loading&&!data} forecast={rawForecast??undefined} dataFresh={displayForecast} strokeCenters={strokeCenters} centerLayer={centerLayer}/>
           <div className="replay-toolbar"><span><RotateCcw size={13}/>{replay===null?t('历史回放','Replay'):t('正在回放','Replaying')}</span><button aria-label={t("回退一根K线","Previous bar")} disabled={!data} onClick={()=>{setPlaying(false);setReplay(Math.max(Math.min(3,data!.candles.length),(replay??data!.candles.length)-1));}}><StepBack size={14}/></button><button className={playing?'active':''} aria-label={playing?t('暂停回放','Pause replay'):t('播放历史','Play history')} disabled={!data} onClick={()=>{if(replay===null)setReplay(Math.min(80,data!.candles.length-1));setPlaying(p=>!p);}}>{playing?<Pause size={14}/>:<Play size={14}/>}</button><button aria-label={t("前进一根K线","Next bar")} disabled={!data||replay===null} onClick={()=>setReplay(r=>r!==null&&r+1<data!.candles.length?r+1:null)}><StepForward size={14}/></button><input aria-label={t("历史回放进度","Replay position")} type="range" min={Math.min(3,data?.candles.length||3)} max={data?.candles.length||35} value={replay??data?.candles.length??35} disabled={!data} onChange={e=>{setPlaying(false);const n=Number(e.target.value);setReplay(n===data!.candles.length?null:n);}}/><span className="replay-counter">{candles.length} / {data?.candles.length||0}</span><button className="return-live" disabled={replay===null} onClick={()=>{setReplay(null);setPlaying(false);}}>{t("回到最新","Latest")}</button></div>
           <div className="data-source"><span><Radio size={11}/>{data?mt(data.source):t('等待行情源','Waiting for data')} · {data?mt(data.adjustment):'—'}{replay!==null&&<b> · {t('历史回放','Replay')}</b>}</span>{data&&!imported&&interval==='4h'&&market!=='crypto'&&<span>{market==='cn'?t('4H：每交易日一根','4H: one candle per trading day'):t('4H：首段4小时，尾段2.5小时','4H: first bar 4 hours; closing bar 2.5 hours')}</span>}<span>{candles.length?`${readableTime(candles[0].time,locale)} — ${readableTime(last!.time,locale)}`:t('数据时间 —','Data time —')}</span></div>
           <HistoryCoverage data={data}/>
+          </>}
         </section>
         <aside className="analysis-rail">
           <ConfluencePanel analysis={analysis} loading={loading||pendingContext} interval={interval} market={market} forecast={rawForecast??undefined} dataFresh={displayForecast}/>

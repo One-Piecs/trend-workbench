@@ -154,6 +154,29 @@ export function marketDisplayText(text: string, language: Language): string {
     .replace('Spot data comes from the exchange shown on the page. ', '');
 }
 
+/** After all attempts settle, describe the result once, including distinct HTTP codes if available. */
+export function marketLoadErrorText(message: string, language: Language): string {
+  const zh = language === 'zh';
+  if (message.startsWith('现货行情暂不可用')) {
+    const reasons = message.replace(/^现货行情暂不可用[：:]\s*/, '').split('；');
+    if (reasons.every(reason => reason.includes('未收录该交易对'))) {
+      return zh ? '所查询的行情源均未收录这个交易对。' : 'None of the queried providers lists this trading pair.';
+    }
+    const codes = [...new Set(message.match(/HTTP\s+\d{3}/gi) ?? [])].join(', ');
+    if (codes) {
+      return zh ? `暂未取得该周期的现货K线。行情源返回 ${codes}。` : `Spot candles are unavailable for this timeframe. Provider response: ${codes}.`;
+    }
+    return zh ? '行情源暂未提供这个周期的现货K线。' : 'Spot candles are temporarily unavailable for this timeframe.';
+  }
+  if (/^(failed to fetch|fetch failed|load failed|networkerror|network request failed)/i.test(message)) {
+    return zh ? '未能连接行情服务。' : 'Could not connect to the market data service.';
+  }
+  if (/^(timeout(error)?\b|the operation (was aborted due to timeout|timed out))|signal timed out/i.test(message)) {
+    return zh ? '行情请求超时。' : 'The market data request timed out.';
+  }
+  return marketDisplayText(message, language);
+}
+
 /** Company names are identifiers: never invent English names for arbitrary search results. */
 export function translateInstrumentName(name: string, language: Language): string {
   if (language === 'zh') return name;

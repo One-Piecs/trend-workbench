@@ -13,6 +13,8 @@ const intervals: Interval[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w',
 const labels: Record<CryptoProvider, string> = {binance: 'Binance', okx: 'OKX', bitget: 'Bitget', bybit: 'Bybit', kraken: 'Kraken'};
 const minutes: Record<Interval, number> = {'1m':1,'5m':5,'15m':15,'30m':30,'1h':60,'4h':240,'1d':1440,'1w':10080,'1M':0};
 const okxBars: Record<Interval,string> = {'1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1H','4h':'4H','1d':'1Dutc','1w':'1Wutc','1M':'1Mutc'};
+const bitgetBars: Record<Interval,string> = {'1m':'1min','5m':'5min','15m':'15min','30m':'30min','1h':'1h','4h':'4h','1d':'1Dutc','1w':'1Wutc','1M':'1Mutc'};
+const bybitBars: Record<Interval,string> = {'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D','1w':'W','1M':'M'};
 const names: Record<string,string> = {BTC:'比特币 Bitcoin',ETH:'以太坊 Ethereum',SOL:'Solana',BNB:'BNB',DOGE:'狗狗币 Dogecoin',XRP:'XRP',ADA:'Cardano',AVAX:'Avalanche',LINK:'Chainlink',SUI:'Sui'};
 const alias = (value: string) => value === 'XBT' ? 'BTC' : value === 'XDG' ? 'DOGE' : value;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string,unknown> : {};
@@ -70,8 +72,13 @@ export function aggregateCryptoMonths(daily: Candle[], now = Date.now()): Candle
 /** Works in a Worker and in a browser: fixed public hosts, credential-free GET,
  * CORS-safe headers, bounded pagination. Fetch injection is for deterministic tests. */
 export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init), now: ()=>number = Date.now) {
-  const directories = new Map<CryptoProvider,{expires:number;value:Promise<Pair[]>}>();
-  const blockedUntil = new Map<CryptoProvider,number>();
+  const directories = new Map<string,{expires:number;value:Promise<Pair[]>}>();
+  const cooldowns = new Map<CryptoProvider,{until:number;error:CryptoDataError}>();
+  let routeVersion=0;
+  function resetMarketNetworkFailures(){
+    routeVersion++;
+    for(const [provider,entry] of cooldowns)if(entry.error.upstreamStatus!==429)cooldowns.delete(provider);
+  }
   let lastGood: CryptoProvider | undefined;
   let lastGoodMonthly: CryptoProvider | undefined;
   function order(interval?:Interval): CryptoProvider[] {
@@ -81,29 +88,47 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
       const native:CryptoProvider[]=['binance','okx','bitget','bybit'];
       return [...(lastGoodMonthly&&native.includes(lastGoodMonthly)?[lastGoodMonthly,...native.filter(p=>p!==lastGoodMonthly)]:native),'kraken'];
     }
-    const all: CryptoProvider[]=['binance','okx','kraken'];
+    const all: CryptoProvider[]=['binance','okx','kraken','bitget','bybit'];
     return lastGood ? [lastGood,...all.filter(p=>p!==lastGood)] : all;
   }
   async function get(provider: CryptoProvider, url: string, signal?: AbortSignal): Promise<unknown> {
-    if ((blockedUntil.get(provider)||0)>now()) throw new CryptoDataError(`${labels[provider]} 暂不可用，正在切换独立行情源。`);
+    const cooldown=cooldowns.get(provider);
+    if(cooldown&&cooldown.until>now())throw cooldown.error;
+    const requestRoute=routeVersion;
     const controller=new AbortController(),abort=()=>controller.abort();
     if(signal?.aborted)controller.abort();else signal?.addEventListener('abort',abort,{once:true});
     const timer=setTimeout(abort,6500);
     try {
       const response=await fetcher(url,{signal:controller.signal,credentials:'omit',headers:{Accept:'application/json'}});
       if(!response.ok) {
-        if([403,451,429].includes(response.status)||response.status>=500)blockedUntil.set(provider,now()+(response.status===429?60000:300000));
-        throw new CryptoDataError(`${labels[provider]} 返回 HTTP ${response.status}`,response.status===404?404:502,response.status);
+        if(response.status===400) {
+          const body=record(await response.json().catch(()=>null));
+          if((provider==='binance'&&body.code===-1121)||(provider==='bitget'&&body.code==='40034')) {
+            throw new CryptoDataError(`${labels[provider]} 未收录该交易对`,404,400);
+          }
+        }
+        const error=new CryptoDataError(`${labels[provider]} 返回 HTTP ${response.status}`,response.status===404?404:502,response.status);
+        // An explicit rate or access limit applies across requests. A failed
+        // connection or 5xx on one endpoint must not suppress a later refresh.
+        if(response.status===429||(requestRoute===routeVersion&&[403,451].includes(response.status))) {
+          let delay=response.status===429?60000:300000;
+          const retry=response.headers.get('retry-after');
+          if(retry&&response.status===429){
+            const wait=/^\d+$/.test(retry)?Number(retry)*1000:Date.parse(retry)-now();
+            if(Number.isFinite(wait)&&wait>=0)delay=wait;
+          }
+          cooldowns.set(provider,{until:now()+delay,error});
+        }
+        throw error;
       }
       return await response.json();
     } catch(error) {
       if(signal?.aborted)throw new DOMException('请求已取消','AbortError');
       if(error instanceof CryptoDataError)throw error;
-      blockedUntil.set(provider,now()+30000);
       throw new CryptoDataError(`${labels[provider]} 连接超时或数据格式异常`);
     } finally { clearTimeout(timer);signal?.removeEventListener('abort',abort); }
   }
-  async function directory(provider: CryptoProvider, signal?: AbortSignal): Promise<Pair[]> {
+  async function directory(provider: CryptoProvider, signal?: AbortSignal, symbol?: string, hint?: Pair): Promise<Pair[]> {
     const waitForCaller = (value: Promise<Pair[]>): Promise<Pair[]> => {
       if(!signal)return value;
       if(signal.aborted)return Promise.reject(new DOMException('请求已取消','AbortError'));
@@ -113,38 +138,47 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
         value.then(result=>{signal.removeEventListener('abort',abort);resolve(result);},error=>{signal.removeEventListener('abort',abort);reject(error);});
       });
     };
-    const cached=directories.get(provider);if(cached&&cached.expires>now())return waitForCaller(cached.value);
+    // OKX uses a hyphenated identity. Only narrow that lookup once the two
+    // currencies have been verified. Never guess where an unknown symbol splits.
+    const lookup=provider==='okx'?(hint?`${hint.base}-${hint.quote}`:undefined):symbol;
+    const key=`${provider}:${lookup||'*'}`;
+    const cached=directories.get(key);if(cached&&cached.expires>now())return waitForCaller(cached.value);
+    const parameter=lookup?encodeURIComponent(lookup):'';
     // A shared directory load has its own bounded timeout. Cancelling the first
     // chart request must not abort a second chart/search waiting on that load.
     const value=(async()=>{
       let result: Pair[]=[];
       if(provider==='binance') {
-        const payload=record(await get(provider,'https://data-api.binance.vision/api/v3/exchangeInfo'));
+        const payload=record(await get(provider,'https://data-api.binance.vision/api/v3/exchangeInfo?showPermissionSets=false'+(parameter?'&symbol='+parameter:'')));
+        if(!Array.isArray(payload.symbols))throw new CryptoDataError('Binance 现货目录暂不可用。');
         result=(Array.isArray(payload.symbols)?payload.symbols:[]).flatMap(item=>{
           const r=record(item);return r.status==='TRADING'&&r.isSpotTradingAllowed!==false&&typeof r.symbol==='string'&&typeof r.baseAsset==='string'&&typeof r.quoteAsset==='string'&&r.symbol===r.baseAsset+r.quoteAsset?[{symbol:r.symbol,base:r.baseAsset,quote:r.quoteAsset,providerId:r.symbol}]:[];
         });
       } else if(provider==='okx') {
-        const payload=record(await get(provider,'https://www.okx.com/api/v5/public/instruments?instType=SPOT'));
-        if(payload.code!=='0')throw new CryptoDataError('OKX 现货目录暂不可用。');
+        const payload=record(await get(provider,'https://www.okx.com/api/v5/public/instruments?instType=SPOT'+(parameter?'&instId='+parameter:'')));
+        if(lookup&&payload.code==='51001')return [];
+        if(payload.code!=='0'||!Array.isArray(payload.data))throw new CryptoDataError('OKX 现货目录暂不可用。');
         result=(Array.isArray(payload.data)?payload.data:[]).flatMap(item=>{
           const r=record(item);return r.state==='live'&&typeof r.baseCcy==='string'&&typeof r.quoteCcy==='string'&&typeof r.instId==='string'&&r.instId===`${r.baseCcy}-${r.quoteCcy}`?[{symbol:r.baseCcy+r.quoteCcy,base:r.baseCcy,quote:r.quoteCcy,providerId:r.instId}]:[];
         });
       } else if(provider==='bitget') {
-        const payload=record(await get(provider,'https://api.bitget.com/api/v2/spot/public/symbols'));
-        if(payload.code!=='00000')throw new CryptoDataError('Bitget 现货目录暂不可用。');
+        const payload=record(await get(provider,'https://api.bitget.com/api/v2/spot/public/symbols'+(parameter?'?symbol='+parameter:'')));
+        if(payload.code!=='00000'||!Array.isArray(payload.data))throw new CryptoDataError('Bitget 现货目录暂不可用。');
         result=(Array.isArray(payload.data)?payload.data:[]).flatMap(item=>{
           const r=record(item);return r.status==='online'&&typeof r.symbol==='string'&&typeof r.baseCoin==='string'&&typeof r.quoteCoin==='string'&&r.symbol===r.baseCoin.toUpperCase()+r.quoteCoin.toUpperCase()?[{symbol:r.symbol,base:r.baseCoin.toUpperCase(),quote:r.quoteCoin.toUpperCase(),providerId:r.symbol}]:[];
         });
       } else if(provider==='bybit') {
-        const payload=record(await get(provider,'https://api.bybit.com/v5/market/instruments-info?category=spot'));
+        const payload=record(await get(provider,'https://api.bybit.com/v5/market/instruments-info?category=spot'+(parameter?'&symbol='+parameter:'')));
         const data=record(payload.result);
-        if(payload.retCode!==0||data.category!=='spot')throw new CryptoDataError('Bybit 现货目录暂不可用。');
+        if(payload.retCode!==0||data.category!=='spot'||!Array.isArray(data.list))throw new CryptoDataError('Bybit 现货目录暂不可用。');
         result=(Array.isArray(data.list)?data.list:[]).flatMap(item=>{
           const r=record(item);return r.status==='Trading'&&typeof r.symbol==='string'&&typeof r.baseCoin==='string'&&typeof r.quoteCoin==='string'&&r.symbol===r.baseCoin+r.quoteCoin?[{symbol:r.symbol,base:r.baseCoin,quote:r.quoteCoin,providerId:r.symbol}]:[];
         });
       } else {
-        const payload=record(await get(provider,'https://api.kraken.com/0/public/AssetPairs'));
+        const payload=record(await get(provider,'https://api.kraken.com/0/public/AssetPairs'+(parameter?'?pair='+parameter:'')));
+        if(lookup&&Array.isArray(payload.error)&&payload.error.includes('EQuery:Unknown asset pair'))return [];
         if(Array.isArray(payload.error)&&payload.error.length)throw new CryptoDataError('Kraken 现货目录暂不可用。');
+        if(!payload.result||Array.isArray(payload.result)||typeof payload.result!=='object')throw new CryptoDataError('Kraken 现货目录暂不可用。');
         result=Object.entries(record(payload.result)).flatMap(([key,item])=>{
           const r=record(item),parts=typeof r.wsname==='string'?r.wsname.split('/'):[];
           if(parts.length!==2||(r.status&&r.status!=='online'))return [];
@@ -152,35 +186,43 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
         });
       }
       result=result.filter(r=>/^[A-Z0-9]{4,30}$/.test(r.symbol)&&/^[A-Z0-9-]+$/.test(r.providerId));
-      if(!result.length)throw new CryptoDataError(`${labels[provider]} 未返回有效现货目录。`);
+      if(!lookup&&!result.length)throw new CryptoDataError(`${labels[provider]} 未返回有效现货目录。`);
       return result;
-    })().catch(error=>{directories.delete(provider);throw error;});
-    directories.set(provider,{expires:now()+30*60000,value});return waitForCaller(value);
+    })().catch(error=>{
+      // A generic HTTP 404 can come from a gateway. Only recognized exchange
+      // symbol errors count as an absent listing.
+      if(lookup&&error instanceof CryptoDataError&&error.status===404&&error.upstreamStatus===400)return [];
+      if(directories.get(key)?.value===value)directories.delete(key);
+      throw error;
+    });
+    // Pair-specific lookups keep a cold chart small and search still gets the
+    // full directory. Bound memory in a long-running desktop or worker session.
+    directories.delete(key);
+    if(directories.size>=256)directories.delete(directories.keys().next().value!);
+    directories.set(key,{expires:now()+30*60000,value});return waitForCaller(value);
   }
-  async function candlesFor(provider:CryptoProvider,pair:Pair,interval:Interval,limit:number,signal?:AbortSignal):Promise<Candle[]> {
+  async function candlesFor(provider:CryptoProvider,pair:Pair,interval:Interval,limit:number,signal:AbortSignal,callerSignal?:AbortSignal):Promise<Candle[]> {
     const observed=(input:Candle[])=>clean(input).filter(c=>c.time*1000<=now());
     if(provider==='bitget'||provider==='bybit') {
-      if(interval!=='1M')throw new CryptoDataError('该独立备用源仅用于原生月线。');
       let raw:unknown[][];
       if(provider==='bitget') {
         // 1M uses UTC+8 at Bitget; 1Mutc explicitly requests UTC month boundaries.
-        const payload=record(await get(provider,`https://api.bitget.com/api/v2/spot/market/candles?symbol=${encodeURIComponent(pair.providerId)}&granularity=1Mutc&limit=${limit}`,signal));
-        if(payload.code!=='00000')throw new CryptoDataError(`Bitget 暂无 ${pair.providerId} 的原生月线。`,404);
+        const payload=record(await get(provider,`https://api.bitget.com/api/v2/spot/market/candles?symbol=${encodeURIComponent(pair.providerId)}&granularity=${bitgetBars[interval]}&limit=${limit}`,signal));
+        if(payload.code!=='00000')throw new CryptoDataError(`Bitget 暂无 ${pair.providerId} 的该周期数据。`,404);
         raw=rows(payload.data);
       } else {
-        const payload=record(await get(provider,`https://api.bybit.com/v5/market/kline?category=spot&symbol=${encodeURIComponent(pair.providerId)}&interval=M&limit=${limit}`,signal));
+        const payload=record(await get(provider,`https://api.bybit.com/v5/market/kline?category=spot&symbol=${encodeURIComponent(pair.providerId)}&interval=${bybitBars[interval]}&limit=${limit}`,signal));
         const data=record(payload.result);
-        if(payload.retCode!==0||data.category!=='spot'||data.symbol!==pair.providerId)throw new CryptoDataError('Bybit 月线响应的现货交易对不匹配。');
+        if(payload.retCode!==0||data.category!=='spot'||data.symbol!==pair.providerId)throw new CryptoDataError('Bybit 行情响应的现货交易对不匹配。');
         raw=rows(data.list);
       }
-      const parsed=clean(raw.map(r=>{
-        const time=Number(r[0])/1000,d=new Date(time*1000),end=Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1);
+      const parsed=observed(raw.map(r=>{
+        const time=Number(r[0])/1000,d=new Date(time*1000);
+        const end=interval==='1M'?Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1):(time+minutes[interval]*60)*1000;
         return {time,open:Number(r[1]),high:Number(r[2]),low:Number(r[3]),close:Number(r[4]),volume:Number(r[5]),closed:end<=now()-2000};
       }));
-      if(parsed.some(c=>{
-        const d=new Date(c.time*1000);
-        return c.time*1000!==Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),1)||c.time*1000>now();
-      }))throw new CryptoDataError(`${labels[provider]} 返回的时间不是UTC月首，未作为月线使用。`);
+      if(parsed.some(c=>c.time!==currentPeriodStart(interval,c.time*1000)))throw new CryptoDataError(interval==='1M'
+        ?`${labels[provider]} 返回的时间不是UTC月首，未作为月线使用。`:`${labels[provider]} 返回的K线时间与所选周期不符。`);
       return parsed.slice(-limit);
     }
     if(provider==='binance') {
@@ -193,7 +235,7 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
         let raw:unknown[][];
         try { raw=rows(await get(provider,`https://data-api.binance.vision/api/v3/klines?${query}`,signal)); }
         catch(error) {
-          if(signal?.aborted||!accumulated.length)throw error;
+          if(callerSignal?.aborted||!accumulated.length)throw error;
           break; // An unavailable backfill page must not erase the live window.
         }
         if(!raw.length)break;
@@ -219,7 +261,7 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
           if(payload.code!=='0')throw new CryptoDataError(`OKX 暂无 ${pair.providerId} 的该周期数据。`,404);
           pageRows=rows(payload.data);
         } catch(error) {
-          if(signal?.aborted||!accumulated.length)throw error;
+          if(callerSignal?.aborted||!accumulated.length)throw error;
           break;
         }
         if(!pageRows.length)break;
@@ -250,8 +292,12 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
     let identity:Pair|undefined,best:HistoryCandidate|undefined;
     type Outcome={candidate?:HistoryCandidate;failure?:string;missing?:boolean};
     async function attempt(provider:CryptoProvider,establishIdentity:boolean):Promise<Outcome> {
+      // Covers listing verification and every pagination request together.
+      // Even if all five feeds hang, failover stays within the chart timeout.
+      const deadline=AbortSignal.timeout(10000);
+      const providerSignal=signal?AbortSignal.any([signal,deadline]):deadline;
       try {
-        const pair=(await directory(provider,signal)).find(r=>r.symbol===symbol);
+        const pair=(await directory(provider,providerSignal,symbol,identity)).find(r=>r.symbol===symbol);
         if(!pair)return {missing:true,failure:`${labels[provider]} 未收录该交易对`};
         // Concatenated symbols alone are not an identity: AB/CD and A/BCD
         // must not become interchangeable just because both spell ABCD.
@@ -262,7 +308,7 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
           if(!establishIdentity)throw new CryptoDataError('尚未核验现货交易对身份。');
           identity=pair;
         }
-        const candles=await candlesFor(provider,pair,interval,limit,signal);
+        const candles=await candlesFor(provider,pair,interval,limit,providerSignal,signal);
         if(!candles.length)throw new CryptoDataError(`${labels[provider]} 未返回有效K线。`,404);
         if(interval==='1M'&&candles.some(c=>{
           const d=new Date(c.time*1000);
@@ -270,7 +316,8 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
         }))throw new CryptoDataError(`${labels[provider]} 返回的时间不是UTC月首，未作为月线使用。`);
         return {candidate:{provider,pair,candles}};
       } catch(error) {
-        if(signal?.aborted)throw error;
+        if(signal?.aborted)throw new DOMException('请求已取消','AbortError');
+        if(deadline.aborted)return {failure:`${labels[provider]} 连接超时`};
         return {failure:error instanceof Error?error.message:`${labels[provider]} 暂不可用`};
       }
     }
@@ -330,8 +377,9 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
     if(!succeeded)throw new CryptoDataError('当前无法连接现货目录，请稍后重试。');
     return [];
   }
-  return {getCryptoCandles,searchCrypto};
+  return {getCryptoCandles,searchCrypto,resetMarketNetworkFailures};
 }
 const client=createCryptoClient();
 export const getCryptoCandles=client.getCryptoCandles;
 export const searchCrypto=client.searchCrypto;
+export const resetMarketNetworkFailures=client.resetMarketNetworkFailures;
