@@ -1,0 +1,30 @@
+{
+  "name": "trend-workbench",
+  "version": "1.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.14.1"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "prebuild": "node --experimental-strip-types --test tests/official-header.test.ts",
+    "build": "node ../local-workbench/build.mjs --shared-assets ../../outputs/shared",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "lucide-react": "1.31.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3",
+    "@tailwindcss/postcss": "4.2.1",
+    "tailwindcss": "4.2.1",
+    "postcss": "8.5.23"
+  }
+}
