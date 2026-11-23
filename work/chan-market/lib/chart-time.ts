@@ -28,6 +28,12 @@ export function dualClockMarket(market: Market | undefined): boolean {
   return market === 'us';
 }
 
+/** Split axis label so the two clocks stack vertically instead of colliding. */
+export function axisStamp(t: number, interval: Interval, locale: string, market?: Market): { local: string; exchange: string } | null {
+  if (!dualClockMarket(market)) return null;
+  return { local: localStamp(t, false, interval, locale), exchange: exchangeStamp(t, false, interval, locale) };
+}
+
 export function chartStamp(t: number, full: boolean, interval: Interval, locale: string, market?: Market): string {
   const local = localStamp(t, full, interval, locale);
   if (!dualClockMarket(market)) return local;

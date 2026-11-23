@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chartStamp, exchangeStamp, dualClockMarket } from '../lib/chart-time.ts';
+import { axisStamp, chartStamp, exchangeStamp, dualClockMarket } from '../lib/chart-time.ts';
 
 // Force a fixed local zone so the assertions are machine-independent.
 process.env.TZ = 'Asia/Shanghai';
@@ -43,4 +43,15 @@ test('calendar bars fall back to date-only exchange labels', () => {
   assert.ok(exchangeStamp(week, false, '1w', 'zh-CN').includes('11/16'));
   assert.ok(exchangeStamp(month, false, '1M', 'zh-CN').includes('2026'), `month label expected: ${exchangeStamp(month, false, '1M', 'zh-CN')}`);
   assert.ok(exchangeStamp(month, false, '1M', 'zh-CN').includes('10'), `month label expected: ${exchangeStamp(month, false, '1M', 'zh-CN')}`);
+});
+
+test('axis ticks split into two stacked lines for US markets only', () => {
+  const overnight = Date.parse('2026-11-23T06:00:00Z') / 1000; // 14:00 Beijing = 01:00 New York
+  const axis = axisStamp(overnight, '15m', 'zh-CN', 'us');
+  assert.ok(axis, 'US axis ticks are split');
+  assert.ok(axis!.local.includes('14:00') && axis!.local.includes('11/23'), `local line: ${axis!.local}`);
+  assert.ok(axis!.exchange.includes('01:00'), `exchange line: ${axis!.exchange}`);
+  assert.equal(axisStamp(overnight, '15m', 'zh-CN', 'crypto'), null);
+  assert.equal(axisStamp(overnight, '15m', 'zh-CN', 'cn'), null);
+  assert.equal(axisStamp(overnight, '15m', 'zh-CN', undefined), null);
 });

@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Minus, Plus, ScanLine } from 'lucide-react';
 import type { Analysis, Candle, Market } from '@/lib/market-types';
-import { chartStamp } from '@/lib/chart-time';
+import { axisStamp, chartStamp, dualClockMarket } from '@/lib/chart-time';
 import { useLanguage } from '@/lib/language';
 import { isDirectionUnclear } from '@/lib/plan-presentation';
 import type { MarketForecast } from '@/lib/forecast-types';
@@ -151,7 +151,7 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
       <defs><clipPath id="price-clip"><rect x="0" y={TOP} width={W-RIGHT} height={PH+8}/></clipPath><clipPath id={centerClipId}><rect data-testid="chart-center-clip" x={LEFT} y={TOP} width={usable} height={PH}/></clipPath><linearGradient id="watermark-grad"><stop stopColor="#223039"/><stop offset="1" stopColor="#122129"/></linearGradient></defs>
       <rect width={W} height={H} fill="#0e181e"/>
       {Array.from({length:6},(_,i)=>{const v=hi-(hi-lo)*i/5,py=y(v);return <g key={i}><line x1={LEFT} x2={W-RIGHT} y1={py} y2={py} stroke="#2b3b45" strokeWidth=".7" strokeDasharray="2 4"/><text x={W-RIGHT+10} y={py+4} fill="#afc0c9" fontSize="12" fontFamily="monospace">{priceText(v)}</text></g>;})}
-      {Array.from({length:Math.max(3,Math.floor(usable/105))},(_,i)=>{const ticks=Math.max(3,Math.floor(usable/105)),index=start+Math.floor(visible.length*i/ticks);return <g key={i}><line x1={x(index)} x2={x(index)} y1={TOP} y2={H-28} stroke="#25343e" strokeWidth=".7"/><text x={Math.max(48,x(index))} y={H-9} fill="#afc0c9" fontSize="12" textAnchor="middle">{candles[index]?stamp(candles[index].time,false):''}</text></g>;})}
+      {Array.from({length:Math.max(3,Math.floor(usable/105))},(_,i)=>{const ticks=Math.max(3,Math.floor(usable/105)),index=start+Math.floor(visible.length*i/ticks);const tick=candles[index];if(!tick)return null;const axis=axisStamp(tick.time,interval as Parameters<typeof chartStamp>[2],locale,market);return <g key={i}><line x1={x(index)} x2={x(index)} y1={TOP} y2={H-28} stroke="#25343e" strokeWidth=".7"/>{axis?<><text x={Math.max(48,x(index))} y={H-21} fill="#afc0c9" fontSize="12" textAnchor="middle">{axis.local}</text><text x={Math.max(48,x(index))} y={H-7} fill="#8299a4" fontSize="11" textAnchor="middle">{axis.exchange}</text></>:<text x={Math.max(48,x(index))} y={H-9} fill="#afc0c9" fontSize="12" textAnchor="middle">{stamp(tick.time,false)}</text>}</g>;})}
       <text x="18" y="25" fill="#d8e5e9" fontSize="13" fontFamily="monospace">{selected?stamp(selected.time,true):t('正在获取市场数据','Loading market data')}</text>
       {selected&&<text x="18" y="49" fill={selected.close>=selected.open?'#42d6ab':'#f4777c'} fontSize="13" fontFamily="monospace">{t('开','O')} {priceText(selected.open)}  {t('高','H')} {priceText(selected.high)}  {t('低','L')} {priceText(selected.low)}  {t('收','C')} {priceText(selected.close)}</text>}
       <text x={W/2-50} y="230" textAnchor="middle" fill="url(#watermark-grad)" fontSize="52" fontWeight="700" letterSpacing="3">{symbol}</text>
@@ -216,8 +216,7 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
             <text x={W-RIGHT+8} y={hover.y+4.5} fill="#0b1a22" fontSize={hoverPriceFontSize} fontWeight="600" fontFamily="monospace">{hoverPriceLabel}</text>
           </g>
         </>}
-        <rect x={Math.max(0,Math.min(W-184,x(hover.index)-92))} y={H-29} width="184" height="26" fill="#2c3e47" rx="3"/>
-        <text x={Math.max(92,Math.min(W-92,x(hover.index)))} y={H-12} fill="#f0f6f7" fontSize="12" textAnchor="middle">{stamp(selected.time,true)}</text>
+        {(()=>{const label=stamp(selected.time,true),width=Math.max(184,label.length*(locale==='zh-CN'?11:6.5)+24);return <><rect x={Math.max(0,Math.min(W-width,x(hover.index)-width/2))} y={H-29} width={width} height="26" fill="#2c3e47" rx="3"/><text x={Math.max(width/2,Math.min(W-width/2,x(hover.index)))} y={H-12} fill="#f0f6f7" fontSize="12" textAnchor="middle">{label}</text></>;})()}
       </g>}
       {!candles.length&&!loading&&<text x={W/2} y="300" textAnchor="middle" fill="#81969e" fontSize="14">{t('行情载入后，将在这里绘制真实走势','Real price history will appear when data loads')}</text>}
     </svg>
