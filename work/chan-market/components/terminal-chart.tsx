@@ -2,7 +2,8 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import { Minus, Plus, ScanLine } from 'lucide-react';
-import type { Analysis, Candle } from '@/lib/market-types';
+import type { Analysis, Candle, Market } from '@/lib/market-types';
+import { chartStamp } from '@/lib/chart-time';
 import { useLanguage } from '@/lib/language';
 import { isDirectionUnclear } from '@/lib/plan-presentation';
 import type { MarketForecast } from '@/lib/forecast-types';
@@ -13,18 +14,12 @@ import type {StrokeCenter} from '@/lib/center-layers';
 import type {CenterLayerMode} from './center-layer-selector';
 
 export interface Layers { strokes: boolean; segments: boolean; centers: boolean; signals: boolean; scenarios: boolean; fractals: boolean; setups: boolean }
-interface Props { candles: Candle[]; analysis: Analysis | null; layers: Layers; symbol: string; interval: string; loading?: boolean; forecast?:MarketForecast; dataFresh?:boolean; strokeCenters?:StrokeCenter[]; centerLayer?:CenterLayerMode }
+interface Props { candles: Candle[]; analysis: Analysis | null; layers: Layers; symbol: string; interval: string; loading?: boolean; forecast?:MarketForecast; dataFresh?:boolean; strokeCenters?:StrokeCenter[]; centerLayer?:CenterLayerMode; market?:Market }
 export function priceText(n: number) { const decimals=n===0?2:Math.min(12,Math.max(2,4-Math.floor(Math.log10(Math.abs(n)))));return Number.isFinite(n) ? n.toLocaleString('en-US', {minimumFractionDigits: Math.min(decimals,n<1?4:2),maximumFractionDigits:decimals}) : '—'; }
-function stamp(t: number, full = false, interval = '1h', locale='zh-CN') {
-  const date=new Date(t*1000);
-  if(interval==='1M')return date.toLocaleDateString(locale,{year:'numeric',month:'2-digit'});
-  if(full)return date.toLocaleString(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
-  if(['1m','5m','15m','30m'].includes(interval))return date.toLocaleString(locale,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
-  return date.toLocaleDateString(locale,interval==='1w'?{year:'2-digit',month:'2-digit',day:'2-digit'}:{month:'2-digit',day:'2-digit'});
-}
 
-export default function TerminalChart({candles, analysis, layers, symbol, interval, loading,forecast,dataFresh=true,strokeCenters=[],centerLayer='all'}: Props) {
+export default function TerminalChart({candles, analysis, layers, symbol, interval, loading,forecast,dataFresh=true,strokeCenters=[],centerLayer='all',market}: Props) {
   const {t,locale,language}=useLanguage();
+  const stamp=(time:number,full=false)=>chartStamp(time,full,interval as Parameters<typeof chartStamp>[2],locale,market);
   const centerClipId=useId();
   const [planSelection,setPlanSelection]=useState<{context:string;side:'long'|'short'}|null>(null);
   const planContext=`${symbol}:${interval}`;
@@ -84,7 +79,7 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
     const name=layer==='stroke'?t('笔中枢（局部）','Stroke centers (local)'):t('线段中枢','Segment center');
     const upper=`${code} · ${t('上沿 ZG','Upper ZG')} ${priceText(c.high)}`,lower=`${t('下沿 ZD','Lower ZD')} ${priceText(c.low)}`;
     const from=candles[c.startIndex],to=candles[c.endIndex];
-    const period=`${t('起止','Period')} ${from?stamp(from.time,true,interval,locale):'—'} — ${to?stamp(to.time,true,interval,locale):'—'}`;
+    const period=`${t('起止','Period')} ${from?stamp(from.time,true):'—'} — ${to?stamp(to.time,true):'—'}`;
     const description=`${name} ${code} · ${t('上沿 ZG','Upper ZG')} ${priceText(c.high)} / ${lower} · ${period}${layer==='stroke'?t(' · 局部已确认笔重叠',' · Local overlap of confirmed strokes'):''}`;
     const textWidth=(value:string)=>Array.from(value).reduce((width,char)=>width+(char.charCodeAt(0)>255?12:7),0);
     return {...item,key:`${layer}-${number}`,code,upper,lower,description,labelWidth:Math.max(textWidth(upper),textWidth(lower)),compactWidth:textWidth(code)};
@@ -146,7 +141,7 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
   }
   const colors = {long:'#42d6ab',short:'#f4777c',range:'#bca677'};
   return <div className="chart-shell">
-    <div className="mobile-ohlc">{selected?<><span>{stamp(selected.time,true,interval,locale)}</span><span>{t('开','O')} {priceText(selected.open)} · {t('高','H')} {priceText(selected.high)}</span><span>{t('低','L')} {priceText(selected.low)} · {t('收','C')} {priceText(selected.close)}</span></>:<span>{t('等待行情数据','Waiting for market data')}</span>}<small>{t('图表可左右滑动','Swipe to explore the chart')}</small></div>
+    <div className="mobile-ohlc">{selected?<><span>{stamp(selected.time,true)}</span><span>{t('开','O')} {priceText(selected.open)} · {t('高','H')} {priceText(selected.high)}</span><span>{t('低','L')} {priceText(selected.low)} · {t('收','C')} {priceText(selected.close)}</span></>:<span>{t('等待行情数据','Waiting for market data')}</span>}<small>{t('图表可左右滑动','Swipe to explore the chart')}</small></div>
     <div className="chart-overlay-tools">
       {!analysis&&!forecast?<span className="chart-neutral-note">{loading?t('正在计算本周期预判','Calculating the current timeframe outlook'):t('等待行情数据','Waiting for market data')}</span>:unclear?<span className="chart-neutral-note" data-testid="chart-no-direction">{forecast?forecastTitle(forecast,language,dataFresh):t('暂不提示新方向','No new direction')}</span>:<div className="plan-direction-toggle" aria-label={forecast?t('查看预判方向','View forecast direction'):t('查看计划方向','View plan direction')}>{(['long','short'] as const).map(side=><button key={side} title={forecast?(side==='long'?t('查看做多方案','View long setup'):t('查看做空方案','View short setup')):side==='long'?t('查看多头方案，不更改计划状态','View the long plan without changing its status'):t('查看空头方案，不更改计划状态','View the short plan without changing its status')} className={(forecastSide?.side??plan?.side)===side?`active ${side}`:''} aria-pressed={(forecastSide?.side??plan?.side)===side} onClick={()=>{setPlanSelection({context:planContext,side});setBack(0);}} disabled={forecast?forecast[side].status!=='ready':!analysis?.tradePlans.length}>{forecast?(side==='long'?t('做多','Long'):t('做空','Short')):side==='long'?t('多头计划','Long plan'):t('空头计划','Short plan')}</button>)}</div>}
       <button aria-label={t('缩小图表','Zoom out')} title={t('缩小','Zoom out')} onClick={()=>setCount(c=>Math.min(600,c+40))}><Minus size={14}/></button><span>{Math.min(count,candles.length)} {t('根','bars')}</span><button aria-label={t('放大图表','Zoom in')} title={t('放大','Zoom in')} onClick={()=>setCount(c=>Math.max(40,c-30))}><Plus size={14}/></button><button title={t('回到最新','Latest')} aria-label={t('图表回到最新','Return chart to latest')} onClick={()=>{setBack(0);setCount(160);}}><ScanLine size={14}/></button>
@@ -156,8 +151,8 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
       <defs><clipPath id="price-clip"><rect x="0" y={TOP} width={W-RIGHT} height={PH+8}/></clipPath><clipPath id={centerClipId}><rect data-testid="chart-center-clip" x={LEFT} y={TOP} width={usable} height={PH}/></clipPath><linearGradient id="watermark-grad"><stop stopColor="#223039"/><stop offset="1" stopColor="#122129"/></linearGradient></defs>
       <rect width={W} height={H} fill="#0e181e"/>
       {Array.from({length:6},(_,i)=>{const v=hi-(hi-lo)*i/5,py=y(v);return <g key={i}><line x1={LEFT} x2={W-RIGHT} y1={py} y2={py} stroke="#2b3b45" strokeWidth=".7" strokeDasharray="2 4"/><text x={W-RIGHT+10} y={py+4} fill="#afc0c9" fontSize="12" fontFamily="monospace">{priceText(v)}</text></g>;})}
-      {Array.from({length:Math.max(3,Math.floor(usable/105))},(_,i)=>{const ticks=Math.max(3,Math.floor(usable/105)),index=start+Math.floor(visible.length*i/ticks);return <g key={i}><line x1={x(index)} x2={x(index)} y1={TOP} y2={H-28} stroke="#25343e" strokeWidth=".7"/><text x={Math.max(48,x(index))} y={H-9} fill="#afc0c9" fontSize="12" textAnchor="middle">{candles[index]?stamp(candles[index].time,false,interval,locale):''}</text></g>;})}
-      <text x="18" y="25" fill="#d8e5e9" fontSize="13" fontFamily="monospace">{selected?stamp(selected.time,true,interval,locale):t('正在获取市场数据','Loading market data')}</text>
+      {Array.from({length:Math.max(3,Math.floor(usable/105))},(_,i)=>{const ticks=Math.max(3,Math.floor(usable/105)),index=start+Math.floor(visible.length*i/ticks);return <g key={i}><line x1={x(index)} x2={x(index)} y1={TOP} y2={H-28} stroke="#25343e" strokeWidth=".7"/><text x={Math.max(48,x(index))} y={H-9} fill="#afc0c9" fontSize="12" textAnchor="middle">{candles[index]?stamp(candles[index].time,false):''}</text></g>;})}
+      <text x="18" y="25" fill="#d8e5e9" fontSize="13" fontFamily="monospace">{selected?stamp(selected.time,true):t('正在获取市场数据','Loading market data')}</text>
       {selected&&<text x="18" y="49" fill={selected.close>=selected.open?'#42d6ab':'#f4777c'} fontSize="13" fontFamily="monospace">{t('开','O')} {priceText(selected.open)}  {t('高','H')} {priceText(selected.high)}  {t('低','L')} {priceText(selected.low)}  {t('收','C')} {priceText(selected.close)}</text>}
       <text x={W/2-50} y="230" textAnchor="middle" fill="url(#watermark-grad)" fontSize="52" fontWeight="700" letterSpacing="3">{symbol}</text>
       <text x={W/2-50} y="258" textAnchor="middle" fill="#23343d" fontSize="12" letterSpacing="5">CHAN OBSERVATORY</text>
@@ -222,7 +217,7 @@ export default function TerminalChart({candles, analysis, layers, symbol, interv
           </g>
         </>}
         <rect x={Math.max(0,Math.min(W-184,x(hover.index)-92))} y={H-29} width="184" height="26" fill="#2c3e47" rx="3"/>
-        <text x={Math.max(92,Math.min(W-92,x(hover.index)))} y={H-12} fill="#f0f6f7" fontSize="12" textAnchor="middle">{stamp(selected.time,true,interval,locale)}</text>
+        <text x={Math.max(92,Math.min(W-92,x(hover.index)))} y={H-12} fill="#f0f6f7" fontSize="12" textAnchor="middle">{stamp(selected.time,true)}</text>
       </g>}
       {!candles.length&&!loading&&<text x={W/2} y="300" textAnchor="middle" fill="#81969e" fontSize="14">{t('行情载入后，将在这里绘制真实走势','Real price history will appear when data loads')}</text>}
     </svg>
