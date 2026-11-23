@@ -10,6 +10,24 @@ import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
 const checkNetworkRoute=createNetworkRouteMonitor({onRouteChange:resetMarketNetworkFailures});
 await checkNetworkRoute();
 
+// US overnight (pre/post/night) candles need the Longbridge CLI on this machine.
+// Auth and quota are managed by the user's own `longbridge` login; without the
+// CLI the workbench silently falls back to the regular-session public sources.
+if(!process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE){
+  const {accessSync,constants} = await import('node:fs');
+  const {execFileSync} = await import('node:child_process');
+  // GUI-launched apps inherit a minimal PATH, so common install locations are probed.
+  const bin=['longbridge','/opt/homebrew/bin/longbridge','/usr/local/bin/longbridge'].find(candidate=>{
+    try{accessSync(candidate,constants.X_OK);return true;}catch{return false;}
+  });
+  if(bin){
+    try{
+      execFileSync(bin,['auth','status'],{stdio:'ignore',timeout:10000,env:{...process.env,PATH:`/opt/homebrew/bin:/usr/local/bin:${process.env.PATH||''}`}});
+      process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE='1';
+    }catch{}
+  }
+}
+
 async function marketRequest(load){
   const route=await checkNetworkRoute();
   try{return await load();}catch(error){

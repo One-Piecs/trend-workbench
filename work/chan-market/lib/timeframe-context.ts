@@ -57,6 +57,9 @@ export function candleAvailableAt(candle:Pick<Candle,'time'>,market:Market,inter
   if(interval==='1d')return localEpoch(c.date,market==='cn'?900:960,market)+delay;
   if(interval==='4h')return localEpoch(c.date,market==='cn'?900:c.minute<810?810:960,market)+delay;
   if(market==='cn'||/东方财富|Eastmoney|周期结束/i.test(source))return candle.time+delay;
+  // Longbridge minute bars are start-labelled and span pre/post/overnight sessions; the
+  // regular-session-end clamp would mark evening overnight bars as available too early.
+  if(/Longbridge/i.test(source))return candle.time+seconds[interval]+delay;
   return Math.min(candle.time+seconds[interval],localEpoch(c.date,960,market))+delay;
 }
 

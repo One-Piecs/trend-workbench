@@ -33,3 +33,7 @@ python3 work/local-workbench/macos/verify_archive.py dist/Trend-Workbench-macOS-
 ```
 
 两端的验收脚本都会解压生成的 ZIP，检查资源、本地服务启动与关窗后的退出。添加 `--check-feed` 可按工作台默认深度请求 XRP/USDT 和 BTC/USDT 小时线，检查返回的交易对、报价币、价格和最近一根 K 线时间。
+
+## 美股夜盘行情（可选）
+
+美股分钟级周期默认使用公开正常时段来源。若本机安装并登录了 [Longbridge CLI](https://open.longbridge.com/docs/cli/install)（`longbridge auth login`），本地服务会自动启用 Longbridge 行情源，在 1/5/15/30 分钟和 1 小时 K 线中包含美股盘前、盘后与夜盘时段。未安装或未登录时，工作台自动回退到公开来源，功能不受影响。也可用环境变量显式控制：`TREND_WORKBENCH_LONGBRIDGE_KLINE=1` 启用，`=0` 禁用。Longbridge 历史K线按标的配额计费，详见其官方文档。

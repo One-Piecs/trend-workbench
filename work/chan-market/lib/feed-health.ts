@@ -12,7 +12,7 @@ export interface FeedHealth {
 }
 export interface FeedHealthOptions {nowMs:number;lastSuccessAtMs?:number|null;error?:string|null;interval?:Interval}
 const spans:Record<Exclude<Interval,'1M'>,number>={'1m':60000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000,'1w':604800000};
-const knownFeed=/Binance|OKX|Kraken|Bitget|Bybit|Yahoo|Tencent|Sina|Eastmoney|腾讯|新浪|东方财富/i;
+const knownFeed=/Binance|OKX|Kraken|Bitget|Bybit|Yahoo|Tencent|Sina|Eastmoney|Longbridge|腾讯|新浪|东方财富/i;
 const fetchLimit=120000;
 function bucket(date:string,interval:Interval) {
   if(interval==='1M')return date.slice(0,7);
