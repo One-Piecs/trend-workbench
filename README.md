@@ -2,7 +2,9 @@
 
 我是 **DeFi狙击手**。我做了一个在自己电脑上运行的看盘工具。搜一个标的，选好周期，就能在 K 线上看到缠论中枢、当前方向和对应的入场区间、止损、两档止盈。V2 可以把 1 小时、4 小时和日线放在一起看，还会记下当时给出的判断，往后走够 12 根 K 线再核对结果。
 
-[开发者的 X 主页](https://x.com/bi_9527zx) · [Telegram 讨论社群](https://t.me/jujishou9527) · [下载 Windows / macOS 版](https://github.com/nhovongoc0-max/trend-workbench/releases/latest)
+[下载 Windows 版（ZIP）][win-v2] · [下载 Mac 版（ZIP）][mac-v2]
+
+[开发者的 X 主页](https://x.com/bi_9527zx) · [Telegram 讨论社群](https://t.me/jujishou9527)
 
 ## V2 更新了什么
 
@@ -35,12 +37,15 @@
 
 ## 下载和使用
 
-在 [Releases](https://github.com/nhovongoc0-max/trend-workbench/releases/latest) 选对应系统的 ZIP。两版都叫「趋势判断工作台」，默认中文，可切换英文。
+选择你的系统，点击右侧链接即可下载 V2.0.0。两个版本都默认中文，可切换英文。
 
-| 系统 | 打开方式 |
-| --- | --- |
-| Windows 10/11 x64 | 完整解压到可写文件夹，双击「启动工作台.vbs」。工作台用 Microsoft Edge 独立窗口显示。 |
-| macOS 15 或更高版本，Apple 芯片 | 解压，把「趋势判断工作台.app」拖到「应用程序」后双击。 |
+| 系统 | 打开方式 | 下载 |
+| --- | --- | --- |
+| Windows 10/11 x64 | 完整解压到可写文件夹，双击「启动工作台.vbs」。 | **[下载 Windows 版（ZIP）][win-v2]** |
+| macOS 15 或更高版本，Apple 芯片 | 解压，把「趋势判断工作台.app」拖到「应用程序」后双击。 | **[下载 Mac 版（ZIP）][mac-v2]** |
+
+[win-v2]: https://github.com/nhovongoc0-max/trend-workbench/releases/download/v2.0.0/Trend-Workbench-Windows-x64.zip
+[mac-v2]: https://github.com/nhovongoc0-max/trend-workbench/releases/download/v2.0.0/Trend-Workbench-macOS-arm64.zip
 
 **Mac 首次打开。** 本版本采用临时签名，尚未经 Apple 公证。如首次打开时系统提示无法验证开发者，请先确认应用来自本项目的 GitHub 发行页，然后到「系统设置」→「隐私与安全性」，在「趋势判断工作台」的提示旁点「仍要打开」，按系统提示确认。详情见 [Apple 的首次打开说明](https://support.apple.com/zh-cn/102445)。
 
