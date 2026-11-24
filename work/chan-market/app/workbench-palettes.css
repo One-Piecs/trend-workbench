@@ -32,6 +32,9 @@ html[data-workbench-theme="tradingview"] {
   --bench-backdrop: none;
   --bench-corner: 4px;
   --bench-shadow: none;
+  --bench-session-pre: rgb(132 180 255 / 7%);
+  --bench-session-post: rgb(226 183 100 / 8%);
+  --bench-session-overnight: rgb(200 151 255 / 7%);
 }
 
 html[data-workbench-theme="parchment"] {
@@ -66,6 +69,9 @@ html[data-workbench-theme="parchment"] {
   --bench-backdrop: linear-gradient(135deg, #eadecb, #f1eadf 45%, #eee8df);
   --bench-corner: 7px;
   --bench-shadow: 0 2px 6px rgb(78 55 31 / 7%);
+  --bench-session-pre: rgb(53 104 119 / 7%);
+  --bench-session-post: rgb(130 91 19 / 9%);
+  --bench-session-overnight: rgb(128 80 135 / 7%);
 }
 
 html[data-workbench-theme="glacier"] {
@@ -100,6 +106,9 @@ html[data-workbench-theme="glacier"] {
   --bench-backdrop: linear-gradient(115deg, #d4e7f5, #e9f3fb 52%, #dfebf6);
   --bench-corner: 10px;
   --bench-shadow: 0 2px 8px rgb(42 77 117 / 6%);
+  --bench-session-pre: rgb(45 99 160 / 7%);
+  --bench-session-post: rgb(138 89 23 / 8%);
+  --bench-session-overnight: rgb(117 83 153 / 7%);
 }
 
 html[data-workbench-theme="amethyst"] {
@@ -134,6 +143,9 @@ html[data-workbench-theme="amethyst"] {
   --bench-backdrop: radial-gradient(ellipse at 72% 0%, #392c46, transparent 62%);
   --bench-corner: 9px;
   --bench-shadow: 0 2px 9px rgb(11 7 16 / 18%);
+  --bench-session-pre: rgb(163 185 246 / 7%);
+  --bench-session-post: rgb(228 182 117 / 8%);
+  --bench-session-overnight: rgb(211 163 237 / 7%);
 }
 
 /* These formulas keep status tints readable on both light and dark cards.
@@ -174,6 +186,10 @@ html[data-workbench-theme]:not([data-workbench-theme="mint"]) .trading-chart {
   --chart-inverse-ink: white;
   --chart-up-badge: var(--bench-up-badge);
   --chart-down-badge: var(--bench-down-badge);
+  --chart-session-pre: var(--bench-session-pre);
+  --chart-session-post: var(--bench-session-post);
+  --chart-session-overnight: var(--bench-session-overnight);
+  --chart-session-regular: transparent;
 }
 
 html[data-workbench-theme]:not([data-workbench-theme="mint"]) .trading-workspace {

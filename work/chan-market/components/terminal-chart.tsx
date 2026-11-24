@@ -257,6 +257,24 @@ export default function TerminalChart({candles:loaded, liveBar, snapshotCandles=
   }),TOP+1,TOP+PH-1):[];
   const candleWidth=Math.max(1,Math.min(26,step*.73));
   const upColor='var(--chart-long)',downColor='var(--chart-short)';
+  // Contiguous same-session bars (Longbridge US feed) share one background band;
+  // regular-session bars stay on the paper color so intraday reads unshaded.
+  const sessionBands=useMemo(()=>{
+    const bands:{key:string;session:'pre'|'post'|'overnight';x1:number;x2:number}[]=[];
+    let current:{session:'pre'|'post'|'overnight';from:number}|null=null;
+    for(let i=start;i<end;i++){
+      const session=candles[i]?.session;
+      const bandSession=session==='pre'||session==='post'||session==='overnight'?session:null;
+      if(current&&(current.session!==bandSession)){
+        bands.push({key:`${current.session}-${current.from}`,session:current.session,x1:x(current.from),x2:x(i)});
+        current=null;
+      }
+      if(bandSession&&!current)current={session:bandSession,from:i};
+    }
+    if(current)bands.push({key:`${current.session}-${current.from}`,session:current.session,x1:x(current.from),x2:x(Math.min(end,total))});
+    return bands.filter(band=>band.x2-band.x1>0);
+  },[candles,start,end,total,step]);
+  const sessionLegend=sessionBands.length?['pre','regular','post','overnight' as const].filter(session=>session==='regular'||sessionBands.some(band=>band.session===session)):[];
   const tickCount=Math.max(1,Math.min(visible.length,Math.floor((plotEnd-LEFT)/(interval.endsWith('m')||interval.endsWith('h')?114:90))));
   const historyStatus=historyPaging?.status;
   function loadOlder(manual=false) {
@@ -311,6 +329,7 @@ export default function TerminalChart({candles:loaded, liveBar, snapshotCandles=
     <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" role="img" aria-label={`${symbol} ${interval} ${t('K线、缠论结构、后续点位预判及MACD图，拖动查看历史，滚轮缩放','candlesticks, Chan structures, forward reference levels and MACD; drag to pan, scroll to zoom')}`} className="terminal-chart" onPointerMove={position} onPointerLeave={()=>{setHover(null);drag.current=null;}} onPointerDown={e=>{const bar=barAt(viewport.end-1);if(!bar)return;drag.current={x:e.clientX,endTime:bar.time,step:step*e.currentTarget.getBoundingClientRect().width/W};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerUp={()=>{drag.current=null;}} onPointerCancel={()=>{setHover(null);drag.current=null;}}>
       <defs><clipPath id={priceClipId}><rect x={LEFT} y={TOP} width={plotEnd-LEFT} height={PH}/></clipPath><clipPath id={centerClipId}><rect data-testid="chart-center-clip" x={LEFT} y={TOP} width={plotEnd-LEFT} height={PH}/></clipPath></defs>
       <rect width={W} height={H} fill="var(--chart-paper)"/>
+      {sessionBands.map(band=> <rect key={band.key} data-testid={`chart-session-${band.session}`} x={band.x1} y={TOP} width={Math.max(1,band.x2-band.x1)} height={PH} fill={`var(--chart-session-${band.session})`} pointerEvents="none"/>)}
       {priceTicks(lo,hi,PH).map(value=>{
         const py=y(value),label=Number.isInteger(value)?value.toLocaleString('en-US'):priceText(value);
         return <g key={value}><line x1={LEFT} x2={W-RIGHT} y1={py} y2={py} stroke="var(--chart-grid)" strokeWidth=".8"/>
@@ -409,6 +428,7 @@ export default function TerminalChart({candles:loaded, liveBar, snapshotCandles=
       {priceText(vwap.points[vwap.points.length-1].value)} · {vwap.crossing.level==='segment'?t('线段中枢','Segment center'):t('笔中枢','Stroke center')} {vwap.crossing.direction==='up'?t('上破','break above'):t('下破','break below')} {priceText(vwap.crossing.boundary)} · {t('起点','Anchor')} {stamp(candles[vwap.anchor].time,true,interval,locale)}
     </>:!vwap?t('正在查找最近一次中枢突破','Finding the latest center breakout'):vwap.status==='no-volume'?t('成交量不足，无法计算','Insufficient trading volume'):vwap.status==='incomplete'?t('连续行情不足，无法核对均价','Insufficient continuous history'):t('这段历史未出现已确认突破','No confirmed breakout in this history')}</span></div>}
     {loading&&<div className="chart-loading"><span className="spinner"/><span>{t('正在连接行情源','Connecting to market data')}</span></div>}
+    {sessionLegend.length>0&&<div className="chart-bottom session-legend" data-testid="chart-session-legend"><span style={{flexWrap:'wrap',whiteSpace:'normal'}}>{sessionLegend.map(session=>(<span key={session} className="session-legend-item"><i style={{background:`var(--chart-session-${session})`}}/>{session==='pre'?t('盘前','Pre-market'):session==='regular'?t('盘中','Regular'):session==='post'?t('盘后','After hours'):t('夜盘','Overnight')}</span>))}</span></div>}
     <div className="chart-bottom"><span style={{flexWrap:'wrap',whiteSpace:'normal'}}><i className="legend-dot blue"/>{t('笔','Strokes')} <i className="legend-dot gold"/>{t('线段','Segments')} {layers.centers&&<><i style={{width:9,height:9,border:'1px solid var(--chart-pen)',background:'var(--chart-pen-tint)',marginLeft:7}}/>{t('笔中枢（局部）','Stroke centers (local)')}<i style={{width:9,height:9,border:'1px solid var(--chart-segment)',background:'var(--chart-segment-tint)',marginLeft:7}}/>{t('线段中枢','Segment centers')}</>}{!unclear&&<><i className="legend-line"/>{forecast?t('预判参考位','Outlook reference levels'):t('推演路径','Projected path')}</>}</span><span>{back>0&&layers.setups&&!unclear?forecast?t('查看历史中 · 回到最新显示预判','Viewing history · return to latest for outlook'):t('查看历史中 · 回到最新显示交易计划','Viewing history · return to latest for trade plans'):t('本地时间','Local time')}</span></div>
     {total>0&&<div className="chart-history-nav">
       {historyPaging&&<button type="button" onClick={()=>loadOlder(true)} disabled={historyStatus!=='ready'&&historyStatus!=='error'}>

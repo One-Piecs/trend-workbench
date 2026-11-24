@@ -451,6 +451,7 @@ export function longbridgeOvernightEnabled(): boolean {
 }
 const LONGBRIDGE_PERIODS: Partial<Record<Interval, string>> = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h' };
 const LONGBRIDGE_SESSIONS = new Set(['Intraday', 'Pre', 'Post', 'Overnight']);
+const LONGBRIDGE_SESSION_LABELS: Record<string, Candle['session']> = { Intraday: 'regular', Pre: 'pre', Post: 'post', Overnight: 'overnight' };
 const LONGBRIDGE_EXCHANGES: Record<string, string> = { NASD: 'NASDAQ', NYSE: 'NYSE', AMEX: 'NYSE American' };
 // GUI-launched macOS apps inherit a minimal PATH; Homebrew locations are tried explicitly.
 const LONGBRIDGE_BINARIES = ['longbridge', '/opt/homebrew/bin/longbridge', '/usr/local/bin/longbridge'];
@@ -496,7 +497,7 @@ export function parseLongbridgeCandles(rows: unknown, interval: Interval, now = 
     const time = Date.parse(String(record.time ?? '')) / 1000;
     if (!Number.isFinite(time) || time % 60 !== 0) continue;
     sessions[record.session] = (sessions[record.session] ?? 0) + 1;
-    list.push({ time, open: Number(record.open), high: Number(record.high), low: Number(record.low), close: Number(record.close), volume: Number(record.volume), closed: stockBarClosed(time, interval, 'us', now) });
+    list.push({ time, open: Number(record.open), high: Number(record.high), low: Number(record.low), close: Number(record.close), volume: Number(record.volume), closed: stockBarClosed(time, interval, 'us', now), session: LONGBRIDGE_SESSION_LABELS[record.session] });
   }
   return { candles: sanitizeCandles(list), sessions };
 }

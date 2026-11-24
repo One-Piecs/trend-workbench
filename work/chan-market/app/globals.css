@@ -15,6 +15,17 @@
 .trading-workspace.chart-focus-layout .workspace { margin-inline: 0; padding: 0; max-width: none; }
 .trading-workspace.chart-focus-layout .workspace-grid { display: block; }
 .trading-workspace.chart-focus-layout .chart-panel { border-radius: 0; }
+
+/* Collapsed sidebar: a narrow icon rail. Market icons stay clickable, the
+   workspace reclaims the freed width. */
+.trading-workspace.sidebar-collapsed .sidebar { width: 56px; padding: 22px 8px; }
+.trading-workspace.sidebar-collapsed .sidebar-heading { justify-content: center; padding: 0 0 16px; }
+.trading-workspace.sidebar-collapsed .workspace { margin-left: 56px; }
+.sidebar-toggle { display: inline-flex; align-items: center; justify-content: center; color: var(--muted-foreground); padding: 4px; border-radius: 4px; }
+.sidebar-toggle:hover { background: var(--muted); color: var(--secondary); }
+.trading-workspace.sidebar-collapsed .market-menu button { justify-content: center; gap: 0; padding: 9px 0; }
+.trading-workspace.sidebar-collapsed .market-menu button > span:nth-child(2) { display: none; }
+.trading-workspace.sidebar-collapsed .market-menu button.active { background: var(--green-bg); }
 :root {
   color-scheme: light;
   --background: #f3f6f8;

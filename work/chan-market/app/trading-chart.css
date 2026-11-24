@@ -23,6 +23,11 @@
   --chart-inverse-ink: #ffffff;
   --chart-up-badge: #067258;
   --chart-down-badge: #b23143;
+  /* Session bands: very light so candles and structures stay readable. */
+  --chart-session-pre: rgb(39 102 164 / 6%);
+  --chart-session-regular: transparent;
+  --chart-session-post: rgb(144 99 17 / 7%);
+  --chart-session-overnight: rgb(105 67 164 / 6%);
   background: var(--chart-paper);
   color: var(--chart-ink);
   font-variant-numeric: tabular-nums;
@@ -129,3 +134,6 @@
 }
 .source-quote-line {display:flex; flex-wrap:wrap; align-items:baseline; gap:.25rem 1rem; padding:.35rem 1rem; color:var(--chart-ink); background:var(--chart-paper); font-size:.875rem; font-variant-numeric:tabular-nums;}
 .source-quote-line time {color:var(--chart-muted);}
+.session-legend { display: flex; justify-content: flex-start; }
+.session-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--chart-muted); margin-right: 14px; }
+.session-legend-item i { width: 12px; height: 10px; border-radius: 2px; border: 1px solid var(--chart-grid); display: inline-block; }

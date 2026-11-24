@@ -46,6 +46,8 @@ test('Longbridge parser accepts all four sessions, rejects unknown ones and drop
   const { candles, sessions } = parseLongbridgeCandles(rows, '15m', now);
   assert.deepEqual(candles.map(c => c.time), [Date.parse('2026-11-20T21:00:00Z') / 1000, Date.parse('2026-11-23T05:45:00Z') / 1000, Date.parse('2026-11-23T09:00:00Z') / 1000, Date.parse('2026-11-23T14:30:00Z') / 1000]);
   assert.deepEqual(sessions, { Post: 1, Overnight: 1, Intraday: 1, Pre: 1 });
+  // Session labels ride along so the chart can shade pre/post/overnight bands.
+  assert.deepEqual(candles.map(c => c.session), ['post', 'overnight', 'pre', 'regular']);
   // Older bars are confirmed; a bar still inside its interval stays open.
   assert.equal(candles[0].closed, true);
   assert.throws(() => parseLongbridgeCandles([{ ...cliRow('2026-11-23T05:45:00Z', 'Overnight'), session: 'Auction' }], '15m', now), /未识别的交易时段/);
