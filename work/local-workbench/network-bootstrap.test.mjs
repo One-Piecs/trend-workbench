@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import os from 'node:os';
 import {once} from 'node:events';
 import {configureLocalNetwork,createNetworkRouteMonitor,parseMacProxySettings,resolveNetworkProxy} from './network-bootstrap.mjs';
+
+// The proxy env always bypasses loopback (NO_PROXY), so the direct-access
+// target must sit on an address outside it. macOS cannot bind 127.0.0.2,
+// so prefer the primary LAN address and fall back to 127.0.0.2 elsewhere.
+const targetHost=Object.values(os.networkInterfaces()).flat().find(i=>i&&!i.internal&&i.family==='IPv4')?.address??'127.0.0.2';
 
 test('macOS manual Web and Secure Web proxy routes use only the active global dictionary',async()=>{
   const settings=parseMacProxySettings(`<dictionary> {
@@ -131,14 +137,14 @@ test('fetch returns to direct access in the same process after the manual system
   let proxyRequests=0;
   const proxy=http.createServer((_req,res)=>{proxyRequests++;res.writeHead(502).end();});
   proxy.on('connect',(_req,socket)=>{proxyRequests++;socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');});
-  target.listen(0,'127.0.0.2');
+  target.listen(0,targetHost);
   await once(target,'listening');
   proxy.listen(0,'127.0.0.1');
   await once(proxy,'listening');
   let enabled=1,clock=0;
   const check=createNetworkRouteMonitor({platform:'win32',env:{},now:()=>clock,
     readSettings:async()=>({ProxyEnable:enabled,ProxyServer:'127.0.0.1:'+proxy.address().port})});
-  const targetUrl='http://127.0.0.2:'+target.address().port;
+  const targetUrl='http://'+targetHost+':'+target.address().port;
   try{
     await check();
     await fetch(targetUrl,{signal:AbortSignal.timeout(2500)}).catch(()=>null);

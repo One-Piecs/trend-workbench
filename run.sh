@@ -15,5 +15,5 @@ fi
 echo "构建共享资源..."
 npm run build --prefix "$root/work/chan-market"
 
-echo "启动本地服务 http://127.0.0.1:$port（Ctrl+C 退出）"
+echo "启动本地服务 http://127.0.0.1:${port}（Ctrl+C 退出）"
 exec node "$root/outputs/shared/server.mjs" --port "$port"
