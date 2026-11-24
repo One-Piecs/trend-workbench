@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, ArrowUpRight, ArrowDownRight, ChevronDown, ChevronRight, RefreshCw, Star, X, Activity, Globe2, Layers3, Radio, Download, Upload, StepBack, StepForward, Play, Pause, RotateCcw, AlertTriangle, Check, BarChart3, Crosshair, CheckCircle2, Send, Maximize2, Minimize2 } from 'lucide-react';
+import { Search, ArrowUpRight, ArrowDownRight, ChevronDown, ChevronRight, RefreshCw, Star, X, Activity, Globe2, Layers3, Radio, Download, Upload, StepBack, StepForward, Play, Pause, RotateCcw, AlertTriangle, Check, BarChart3, Crosshair, CheckCircle2, Send, Maximize2, Minimize2, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import {parseCSV,serializeCSV} from '@/lib/csv';
 import TerminalChart, {priceText, type Layers} from '@/components/terminal-chart';
 import LinkedTimeframes from '@/components/linked-timeframes';
@@ -106,6 +106,9 @@ function HomeContent(){
   const [layers,setLayers]=useState<Layers>(initialLayers);
   const [layerMenu,setLayerMenu]=useState(false);
   const [focused,setFocused]=useState(false);
+  const [sidebarCollapsed,setSidebarCollapsed]=useState(false);
+  useEffect(()=>{setSidebarCollapsed(localStorage.getItem('chan-sidebar-collapsed')==='1');},[]);
+  const toggleSidebar=useCallback(()=>{setSidebarCollapsed(collapsed=>{localStorage.setItem('chan-sidebar-collapsed',collapsed?'0':'1');return !collapsed;});},[]);
   const focusButton=useRef<HTMLButtonElement>(null);
   const scrollBeforeFocus=useRef(0);
   const toggleFocus=useCallback(()=>{
@@ -297,7 +300,7 @@ function HomeContent(){
   else if(supplemental.status==='closed')connectionLabel=t('休市','Market closed');
   else if(supplemental.status==='delayed'||market==='commodity'&&supplemental.status==='unconfigured')connectionLabel=t('延时行情','Delayed feed');
   else if(loading&&!data) connectionLabel=t('连接中','Connecting');
-  return <div className={`observatory trading-workspace${focused?' chart-focus-layout':''}`}>
+  return <div className={`observatory trading-workspace${focused?' chart-focus-layout':''}${sidebarCollapsed?' sidebar-collapsed':''}`}>
     <header className="topbar">
       <div className="topbar-start">
         <a className="brand" href="/">
@@ -318,12 +321,19 @@ function HomeContent(){
       </nav>
       <div className="top-right"><button type="button" className="top-refresh" disabled={loading||imported} aria-busy={loading} aria-label={t('刷新行情','Refresh market data')} title={imported?t('本地导入数据无需在线刷新','Imported data does not need an online refresh'):t('刷新当前标的行情和分析','Refresh this instrument and its analysis')} onClick={()=>void fetchData()}><RefreshCw size={17} className={loading?'spin':''} aria-hidden="true"/><span>{loading?t('刷新中','Refreshing'):t('刷新行情','Refresh')}</span></button><span className={`connection ${error?'warning':''}`}><i/>{connectionLabel}</span><div className="language-switch" role="group" aria-label={t('界面语言','Interface language')}><button aria-pressed={language==='zh'} className={language==='zh'?'active':''} onClick={()=>setLanguage('zh')}>中文</button><button aria-pressed={language==='en'} className={language==='en'?'active':''} onClick={()=>setLanguage('en')}>EN</button></div><WorkbenchThemePicker/></div>
     </header>
-    <aside className="sidebar">
-      <div className="sidebar-heading"><span>{t("市场导航","Markets")}</span><Globe2 size={14}/></div>
-      <div className="market-menu">{MARKETS.map(m=><button key={m.id} className={market===m.id?'active':''} onClick={()=>switchMarket(m.id)}><span className="market-icon">{m.id==='crypto'?'₿':m.id==='us'?'$':m.id==='commodity'?'◇':'A'}</span><span>{t(m.title,m.en)}<small>{m.en}</small></span>{market===m.id&&<span className="active-marker"/>}</button>)}</div>
+    <aside className={`sidebar${sidebarCollapsed?' collapsed':''}`}>
+      <div className="sidebar-heading">
+        <button type="button" className="sidebar-toggle" onClick={toggleSidebar} aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed?t('展开侧栏','Expand sidebar'):t('折叠侧栏','Collapse sidebar')} title={sidebarCollapsed?t('展开侧栏','Expand sidebar'):t('折叠侧栏','Collapse sidebar')}>
+          {sidebarCollapsed?<PanelLeftOpen size={14}/>:<PanelLeftClose size={14}/>}
+        </button>
+        {!sidebarCollapsed&&<><span>{t("市场导航","Markets")}</span><Globe2 size={14}/></>}
+      </div>
+      <div className="market-menu">{MARKETS.map(m=><button key={m.id} className={market===m.id?'active':''} onClick={()=>switchMarket(m.id)} title={sidebarCollapsed?t(m.title,m.en):undefined}><span className="market-icon">{m.id==='crypto'?'₿':m.id==='us'?'$':m.id==='commodity'?'◇':'A'}</span><span>{t(m.title,m.en)}<small>{m.en}</small></span>{market===m.id&&<span className="active-marker"/>}</button>)}</div>
+      {!sidebarCollapsed&&<>
       <div className="sidebar-tabs"><button className={watchTab==='all'?'active':''} onClick={()=>setWatchTab('all')}>{t("常用标的","Popular")}</button><button className={watchTab==='favorites'?'active':''} onClick={()=>setWatchTab('favorites')}>{t("我的自选 ","Watchlist ")}<span>{watchlist.length}</span></button></div>
       <div className="watch-list">{watchRows.map(i=><div className={`watch-row ${selected.id===i.id?'selected':''}`} key={i.id}><button onClick={()=>choose(i)}><span className={`asset-symbol ${i.market}`}>{i.symbol==='BTCUSDT'?'₿':i.symbol==='ETHUSDT'?'Ξ':i.symbol.slice(0,1)}</span><span><b>{displaySymbol(i.symbol)}</b><small>{instrumentName(i.name)}</small></span></button><button className="watch-star" onClick={()=>star(i)} title={watchlist.some(w=>w.id===i.id)?t('移出自选','Remove from watchlist'):t('加入自选','Add to watchlist')} aria-label={`${watchlist.some(w=>w.id===i.id)?t('移出自选','Remove from watchlist'):t('加入自选','Add to watchlist')} ${i.symbol}`}><Star size={12} fill={watchlist.some(w=>w.id===i.id)?'currentColor':'none'}/></button></div>)}{!watchRows.length&&<p className="empty-watch">{t("搜索标的后点星号，建立你的观察列表。","Search for an instrument and star it to build your watchlist.")}</p>}</div>
       <button className="add-symbol" onClick={()=>setSearchOpen(true)}><Search size={14}/>{t('搜索更多标的','Find instruments')} <span>/</span></button>
+      </>}
     </aside>
     <main className="workspace">
       <div className="workspace-grid">
