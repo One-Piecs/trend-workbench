@@ -1,3 +1,4 @@
+import {consecutiveCommodityBars} from './commodity-session.ts';
 import { analyze } from './chan.ts';
 import { buildForecast } from './forecast.ts';
 import type { MarketForecast, ReadyForecastSide } from './forecast-types';
@@ -5,12 +6,13 @@ import type { Candle, MarketData } from './market-types';
 import { candleAvailableAt, exchangeClock, higherInterval } from './timeframe-context.ts';
 import { forecastBarStart } from './forecast-journal.ts';
 import { compatibleMarketFeeds, deriveHigherFromPrimary } from './higher-from-primary.ts';
+import { createMinuteExitResolver, type IntrabarUnknown } from './forecast-validation-minutes.ts';
 
 /** Offline research only. No orders, production state or live filter switches. */
-export const FORECAST_VALIDATION_VERSION='forecast-validation-1.0';
+export const FORECAST_VALIDATION_VERSION='forecast-validation-1.1';
 export interface ForecastValidationCosts {feeBps:number;slippageBps:number}
 export interface ForecastValidationInput {
-  primary:MarketData;higher?:MarketData;label?:string;
+  primary:MarketData;higher?:MarketData;minute?:MarketData;label?:string;
   costs?:ForecastValidationCosts;folds?:number;warmupFraction?:number;
   minimumCompleted?:number;penMode?:'new'|'old';
 }
@@ -21,12 +23,13 @@ export interface FrozenForecastObservation {
   regime:MarketForecast['regime'];
   shadowAccepted:boolean;duplicateGeometry:boolean;
 }
-export type ValidationOutcomeStatus='untriggered'|'expired'|'invalidated-before-entry'|'missed-condition'|'ambiguous-confirmation'|'data-gap'|'no-next-bar'|'unavailable-entry'|'skipped-entry'|'ineligible-short'|'restricted-exit'|'open'|'closed'|'overlap-rejected';
+export type ValidationOutcomeStatus='untriggered'|'expired'|'invalidated-before-entry'|'missed-condition'|'ambiguous-confirmation'|'ambiguous-exit'|'data-gap'|'no-next-bar'|'unavailable-entry'|'skipped-entry'|'ineligible-short'|'restricted-exit'|'open'|'closed'|'overlap-rejected';
 export interface ForecastValidationOutcome {
   id:string;side:'long'|'short';publishedAt:number;status:ValidationOutcomeStatus;
   conditionAt?:number;conditionIndex?:number;entryAt?:number;entryIndex?:number;entryPrice?:number;
   exitAt?:number;exitIndex?:number;exitPrice?:number;
-  exitReason?:'stop'|'gap-stop'|'ambiguous-stop-first'|'target2';
+  exitReason?:'stop'|'gap-stop'|'target2';
+  intrabarResolution?:'minute'|IntrabarUnknown;
   netReturnPct?:number;netR?:number;overlapsWith?:string;
   shadowAccepted:boolean;duplicateGeometry:boolean;reason:string;
 }
@@ -42,12 +45,14 @@ export function validationClosedBars(data:MarketData):Candle[] {
   if(!Number.isFinite(capturedAt))throw new Error('A saved source capture timestamp is required.');
   const closed:Candle[]=[];let tail=false,last=-Infinity;
   for(const b of data.candles) {
-    if(!positive(b.time)||b.time<=last||![b.open,b.high,b.low,b.close].every(positive)||b.high<Math.max(b.open,b.close)||b.low>Math.min(b.open,b.close)||!Number.isFinite(b.volume)||b.volume<0)throw new Error('Invalid or unordered source OHLCV.');
+    const priceValid=data.instrument.market==='commodity'?Number.isFinite:positive;
+    if(!positive(b.time)||b.time<=last||![b.open,b.high,b.low,b.close].every(priceValid)||b.high<Math.max(b.open,b.close)||b.low>Math.min(b.open,b.close)||!Number.isFinite(b.volume)||b.volume<0)throw new Error('Invalid or unordered source OHLCV.');
     last=b.time;
     const available=candleAvailableAt(b,data.instrument.market,data.interval,data.source);
     if(b.closed!==true||available>capturedAt){tail=true;continue;}
     if(tail)throw new Error('Unavailable or unfinished candle precedes an available closed candle.');
-    closed.push({...b});
+    if(b.low<=0)closed.length=0;
+    else closed.push({...b});
   }
   return closed;
 }
@@ -59,6 +64,7 @@ function geometry(p:ReadyForecastSide):boolean {
 function hasGap(previous:Candle,next:Candle,data:MarketData):boolean {
   const market=data.instrument.market,interval=data.interval;
   const spans={'1m':60,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'1d':86400,'1w':604800};
+  if(market==='commodity')return !consecutiveCommodityBars(previous.time,next.time,interval);
   if(market==='crypto') {
     if(interval==='1M'){const d=new Date(previous.time*1000);return next.time>Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1)/1000+1;}
     return next.time-previous.time>spans[interval]+1;
@@ -83,7 +89,10 @@ export function freezeValidationForecast(forecast:MarketForecast,publicationInde
  * Publication and confirmation must be known before a bar's opening fill. Only
  * the immediate following opening is attempted; unavailable/out-of-band openings
  * are rejected, never replaced by a convenient later fill. */
-export function simulateFrozenForecast(observation:FrozenForecastObservation,data:MarketData,costs:ForecastValidationCosts=DEFAULT_COSTS,endIndex=data.candles.length-1):ForecastValidationOutcome {
+export function simulateFrozenForecast(observation:FrozenForecastObservation,data:MarketData,costs:ForecastValidationCosts=DEFAULT_COSTS,endIndex=data.candles.length-1,minute?:MarketData):ForecastValidationOutcome {
+  return evaluateFrozenForecast(observation,data,costs,endIndex,createMinuteExitResolver(data,minute));
+}
+function evaluateFrozenForecast(observation:FrozenForecastObservation,data:MarketData,costs:ForecastValidationCosts,endIndex:number,resolveMinute:ReturnType<typeof createMinuteExitResolver>):ForecastValidationOutcome {
   validateCosts(costs);
   const p=observation.forecast,buy=p.side==='long',sign=buy?1:-1,bars=data.candles;
   if(!geometry(p))throw new Error('Invalid frozen forecast geometry.');
@@ -132,10 +141,18 @@ export function simulateFrozenForecast(observation:FrozenForecastObservation,dat
       // purchase day. Never credit a fill that may violate settlement rules.
       if(i===nextIndex&&['1w','1M'].includes(data.interval)||exchangeClock(entryAt,'cn').date===exchangeClock(forecastBarStart(b,data),'cn').date)return {...entered,status:'restricted-exit',reason:'A-share T+1 cannot be established for this exit (same purchase day or coarse entry weekly/monthly bar). No realized return credited.'};
     }
-    const exitReason:ForecastValidationOutcome['exitReason']=gapStop?'gap-stop':stopped&&targeted?'ambiguous-stop-first':stopped?'stop':'target2';
-    const rawExit=gapStop?b.open:stopped?p.invalidationPrice:p.targets[1].price;
+    const opensAtTarget=buy?b.open>=p.targets[1].price:b.open<=p.targets[1].price;
+    let exitReason:ForecastValidationOutcome['exitReason']=gapStop?'gap-stop':opensAtTarget||!stopped?'target2':'stop';
+    let rawExit=gapStop?b.open:exitReason==='stop'?p.invalidationPrice:p.targets[1].price;
+    let exitAt=candleAvailableAt(b,data.instrument.market,data.interval,data.source);
+    let intrabarResolution:'minute'|undefined;
+    if(stopped&&targeted&&!gapStop&&!opensAtTarget) {
+      const evidence=resolveMinute(b,buy,p.invalidationPrice,p.targets[1].price);
+      if(evidence.resolution!=='minute')return {...entered,status:'ambiguous-exit',exitIndex:i,exitAt,intrabarResolution:evidence.resolution,reason:'Both exit levels were touched. Their order is unknown; the position ended by this bar close and no return is credited.'};
+      exitReason=evidence.reason;rawExit=evidence.price;exitAt=evidence.availableAt;intrabarResolution='minute';
+    }
     const exit=rawExit*(1-sign*slip),net=sign*(exit-entry)-(entry+exit)*fee;
-    return {...entered,status:'closed',exitAt:candleAvailableAt(b,data.instrument.market,data.interval,data.source),exitIndex:i,exitPrice:exit,exitReason,netReturnPct:net/entry*100,netR:net/Math.abs(entry-p.invalidationPrice),reason:'One-unit hypothetical event outcome with frozen stop/T2 and costs; not an actual fill or account return.'};
+    return {...entered,status:'closed',exitAt,exitIndex:i,exitPrice:exit,exitReason,intrabarResolution,netReturnPct:net/entry*100,netR:net/Math.abs(entry-p.invalidationPrice),reason:'One-unit hypothetical event outcome with frozen stop/T2 and costs; not an actual fill or account return.'};
   }
   return entered;
 }
@@ -148,8 +165,8 @@ export function enforceSinglePosition(outcomes:readonly ForecastValidationOutcom
   for(let i=0;i<ordered.length;i++) {
     const o=ordered[i];if(o.entryAt===undefined)continue;
     if(o.entryAt<busyUntil) {
-      const {entryAt:ignoredEntry,entryIndex:ignoredIndex,entryPrice:ignoredPrice,exitAt:ignoredExit,exitIndex:ignoredExitIndex,exitPrice:ignoredExitPrice,exitReason:ignoredReason,netReturnPct:ignoredReturn,netR:ignoredR,...rest}=o;
-      void ignoredEntry;void ignoredIndex;void ignoredPrice;void ignoredExit;void ignoredExitIndex;void ignoredExitPrice;void ignoredReason;void ignoredReturn;void ignoredR;
+      const {entryAt:ignoredEntry,entryIndex:ignoredIndex,entryPrice:ignoredPrice,exitAt:ignoredExit,exitIndex:ignoredExitIndex,exitPrice:ignoredExitPrice,exitReason:ignoredReason,intrabarResolution:ignoredMinute,netReturnPct:ignoredReturn,netR:ignoredR,...rest}=o;
+      void ignoredEntry;void ignoredIndex;void ignoredPrice;void ignoredExit;void ignoredExitIndex;void ignoredExitPrice;void ignoredReason;void ignoredMinute;void ignoredReturn;void ignoredR;
       ordered[i]={...rest,status:'overlap-rejected',overlapsWith:owner,reason:'Earlier accepted forecast still occupies this instrument; no additional position.'};
     }else{busyUntil=o.exitAt??Infinity;owner=o.id;}
   }
@@ -161,7 +178,8 @@ export function summarizeForecastValidation(outcomes:readonly ForecastValidation
   const median=(values:number[])=>{if(!values.length)return null;const v=[...values].sort((a,b)=>a-b);return (v[Math.floor((v.length-1)/2)]+v[Math.floor(v.length/2)])/2;};
   return {published:outcomes.length,conditionsMet:outcomes.filter(o=>o.conditionAt!==undefined).length,modeledEntries:outcomes.filter(o=>o.entryPrice!==undefined).length,completed:completed.length,
     outcomesByStatus:Object.fromEntries([...new Set(outcomes.map(o=>o.status))].map(s=>[s,outcomes.filter(o=>o.status===s).length])),
-    duplicateGeometry:outcomes.filter(o=>o.duplicateGeometry).length,ambiguousStopFirst:completed.filter(o=>o.exitReason==='ambiguous-stop-first').length,
+    duplicateGeometry:outcomes.filter(o=>o.duplicateGeometry).length,minuteResolved:completed.filter(o=>o.intrabarResolution==='minute').length,
+    ambiguousExits:outcomes.filter(o=>o.status==='ambiguous-exit').length,
     meanNetReturnPct:mean(returns),meanNetR:mean(risks),medianNetR:median(risks),
     sampleStatus:completed.length<minimumCompleted?'insufficient':'unvalidated',minimumCompleted,evidenceSufficient:false};
 }
@@ -174,6 +192,7 @@ export function validateForecast(input:ForecastValidationInput) {
   const foldCount=input.folds??3,warmupFraction=input.warmupFraction??.4,minimumCompleted=input.minimumCompleted??30;
   if(!Number.isInteger(foldCount)||foldCount<2||foldCount>10||!Number.isFinite(warmupFraction)||warmupFraction<.25||warmupFraction>.75||!Number.isInteger(minimumCompleted)||minimumCompleted<30)throw new Error('Use 2–10 fixed folds, 25–75% warmup and at least 30 completed observations per sample check.');
   const candles=validationClosedBars(input.primary),primary={...input.primary,candles},warmup=Math.max(60,Math.floor(candles.length*warmupFraction));
+  const resolveMinute=createMinuteExitResolver(primary,input.minute);
   const enough=candles.length-warmup>=foldCount*10;
   const windows:ReturnType<typeof runWindow>[]=[],baseline:ForecastValidationOutcome[]=[],shadow:ForecastValidationOutcome[]=[];
   function runWindow(number:number,start:number,end:number) {
@@ -197,9 +216,10 @@ export function validateForecast(input:ForecastValidationInput) {
       const p=observation.forecast,key=JSON.stringify([p.side,p.kind,p.triggerRule,p.zoneLow,p.zoneHigh,p.triggerPrice,p.invalidationPrice,p.targets.map(t=>t.price)]);
       observation.duplicateGeometry=geometrySeen.has(key);geometrySeen.add(key);observations.push(observation);
     }
-    const candidates=observations.map(o=>simulateFrozenForecast(o,primary,costs,end));
+    const candidates=observations.map(o=>evaluateFrozenForecast(o,primary,costs,end,resolveMinute));
+    const minuteReviewTimes=[...new Set(candidates.filter(o=>o.intrabarResolution&&o.exitIndex!==undefined).map(o=>candles[o.exitIndex!].time))].sort((a,b)=>a-b);
     const base=enforceSinglePosition(candidates),filtered=enforceSinglePosition(candidates.filter(o=>o.shadowAccepted));
-    return {number,startIndex:start,endIndex:end,startTime:candles[start].time,endTime:candles[end].time,coverage,
+    return {number,startIndex:start,endIndex:end,startTime:candles[start].time,endTime:candles[end].time,coverage,minuteReviewTimes,
       baseline:summarizeForecastValidation(base,minimumCompleted),shadow:summarizeForecastValidation(filtered,minimumCompleted),
       independentCandidates:summarizeForecastValidation(candidates,minimumCompleted),observations,baselineOutcomes:base,shadowOutcomes:filtered};
   }
@@ -220,7 +240,7 @@ export function validateForecast(input:ForecastValidationInput) {
       'A-share short entries are excluded. Same-day long exits and exits within weekly/monthly bars whose settlement order is unknown receive no realized-return credit.',
       'Confirmed candles are available only at the production conservative timestamp. A next open before that time is rejected. Equality assumes zero processing/network latency; real execution can be worse.',
       'Historical OHLC revisions, source outages, individual halts and corporate-action point-in-time availability are not independently verified. No synthetic missing candles are added.',
-      'Stops and targets touched in one post-entry candle are resolved stop-first; target price has no favorable gap improvement. This cannot reconstruct intrabar order-book execution.',
+      'Post-entry bars touching both stop and target use their opening if conclusive, otherwise complete matching-source one-minute OHLC to establish order. Unresolved cases are counted separately and excluded from return statistics. Targets receive no favorable gap improvement.',
       'Only closed-bar publications are replayed. The live app can refresh from intrabar quotes; archived OHLC alone cannot reproduce those unseen publication snapshots.',
       'Regime filtering is a shadow comparison, not an enabled production rule or a demonstrated improvement. Small/missing evidence is reported instead of a win-probability claim.',
     ]};

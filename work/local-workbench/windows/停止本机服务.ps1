@@ -18,7 +18,7 @@ try {
     if ($length -eq $buffer.Length) { throw '服务身份响应异常，未停止任何进程。' }
     $body = New-Object string($buffer, 0, $length)
     $health = $body | ConvertFrom-Json
-    if ($health.app -ne 'trend-workbench' -or $health.version -ne '1.3-local') { throw '端口由其他服务使用，未停止任何进程。' }
+    if ($health.app -ne 'trend-workbench' -or [string]::IsNullOrWhiteSpace($health.version)) { throw '端口由其他服务使用，未停止任何进程。' }
     $serverPid = 0
     if (![int]::TryParse([string]$health.pid, [ref]$serverPid) -or $serverPid -le 0) { throw '服务进程信息无效。' }
     $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $serverPid)

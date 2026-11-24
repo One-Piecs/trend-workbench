@@ -1,4 +1,5 @@
 import { Activity } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { Analysis, Interval, Market, TradePlan } from '@/lib/market-types';
 import { useLanguage, type Language } from '@/lib/language';
 import { isDirectionUnclear } from '@/lib/plan-presentation';
@@ -96,20 +97,25 @@ export function PlanConfluence({analysis,plan,language}:{analysis:Analysis;plan:
   </div>;
 }
 
-export default function ConfluencePanel({analysis,loading,language:override,interval,market,forecast,dataFresh=true}:{analysis:Analysis|null;loading:boolean;language?:Language;interval?:Interval;market?:Market;forecast?:MarketForecast;dataFresh?:boolean}) {
+export default function ConfluencePanel({analysis,loading,language:override,interval,market,forecast,dataFresh=true,breakoutFlow}:{analysis:Analysis|null;loading:boolean;language?:Language;interval?:Interval;market?:Market;forecast?:MarketForecast;dataFresh?:boolean;breakoutFlow?:ReactNode}) {
   const languageContext=useLanguage();
   const language=override??languageContext.language;
   const t=(zh:string,en:string)=>pick(language,zh,en);
   const c=analysis?.confluence,d=analysis?.decision;
   const timeframe=forecast?.timeframeAssessment;
+  // A neutral/insufficient current structure can still have a verified higher
+  // timeframe. Show its independent direction only at the matching snapshot.
+  const independentHigher = timeframe?.reason==='current-unavailable' && c?.higher.status==='ready'
+    && c.asOf===forecast?.structureAsOf && c.higher.interval===timeframe.higherInterval
+    && c.higher.asOf!==null && c.asOf!==null && c.higher.asOf<=c.asOf;
   const higherInterval=timeframe?(timeframe.higherInterval?forecastPeriod(timeframe.higherInterval,language):''):(c?.higher.interval?pick(language,...intervalNames[c.higher.interval]):'');
-  const higherReady=timeframe?timeframe.status!=='unavailable':c?.higher.status==='ready';
+  const higherReady=independentHigher || (timeframe?timeframe.status!=='unavailable':c?.higher.status==='ready');
   const evidenceCurrent=!forecast||!timeframe||c?.asOf===forecast.structureAsOf;
   const momentum=c?.macd.momentum==='strengthening'?t('动能增强','Momentum strengthening'):c?.macd.momentum==='weakening'?t('动能减弱','Momentum weakening'):t('动能平稳','Momentum steady');
   const volume=c?.volume.participation==='expanded'?t('放量','Expanded volume'):c?.volume.participation==='low'?t('量能偏低','Low volume'):t('量能正常','Normal volume');
   return <section className="confluence-card panel" aria-label={t('综合判断','Combined assessment')} data-testid="confluence-panel">
     <div className="card-top"><span><Activity size={18}/>{t('综合判断','Combined assessment')}</span><span className="confluence-mode">{t('辅助参考','Supporting context')}</span></div>
-    {interval&&<p className="confluence-period micro-copy" data-testid="confluence-period">{t('当前周期：','Current period: ')}{pick(language,...intervalNames[interval])} · {t('K线结束后确认','Confirmed after candle close')}{market==='crypto'&&t(' · 全天连续交易',' · Trades 24/7')}</p>}
+    {interval&&<p className="confluence-period micro-copy" data-testid="confluence-period">{t('当前周期：','Current period: ')}{pick(language,...intervalNames[interval])} · {t('K线结束后确认','Confirmed after candle close')}{market==='crypto'&&t(' · 全天连续交易',' · Trades 24/7')}{market==='commodity'&&t(' · 期货电子盘',' · Futures electronic session')}</p>}
     {forecast&&<>
       <h2 className={`confluence-decision ${dataFresh&&forecast.status==='ready'&&forecast.direction!=='neutral'?forecast.direction:'quiet'}`}><ForecastTitleText forecast={forecast} language={language} dataFresh={dataFresh}/></h2>
       <p className="confluence-summary" style={{fontSize:16}} data-testid="forecast-confluence-summary">{forecastSummary(forecast,language,dataFresh)}</p>
@@ -131,9 +137,10 @@ export default function ConfluencePanel({analysis,loading,language:override,inte
           <dt>{t('成交量','Volume')}</dt><dd>{c.volume.status==='ready'&&c.volume.ratio!==null?`${volume} · ${c.volume.ratio.toFixed(2)}×`:c.volume.reason==='zero-volume'?t('成交量缺失或为零','Volume is missing or zero'):t('可比较的量能历史不足','Insufficient comparable volume history')}</dd>
           {c.volume.status==='ready'&&<small>{c.volume.benchmark==='same-session-slot'?t('相对历史相同时段','Relative to matching historical session slots'):t('相对近期已完成K线','Relative to recent closed bars')}</small>}
         </div>
+        {breakoutFlow}
         <div className={higherReady?'':'unavailable'}>
           <dt><span>{t('更大周期','Higher timeframe')}</span>{higherInterval&&<span>{higherInterval}</span>}</dt>
-          <dd>{timeframe&&forecast?forecastHigherText(forecast,language):c.higher.status==='ready'?directionText(c.higher.direction,language):pick(language,...higherNames[c.higher.status])}</dd>
+          <dd>{independentHigher?directionText(c.higher.direction,language):timeframe&&forecast?forecastHigherText(forecast,language):c.higher.status==='ready'?directionText(c.higher.direction,language):pick(language,...higherNames[c.higher.status])}</dd>
           {higherReady&&<small>{t('仅使用当时已完成的K线','Uses only data closed at the analysis time')}</small>}
         </div>
       </dl>

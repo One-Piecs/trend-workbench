@@ -1,3 +1,4 @@
+import {positiveRunStart} from './commodity-analysis.ts';
 import type { Analysis, Candle, Point, StructureLine } from './market-types';
 import type { ForecastBasisCode, ForecastContext, ForecastDirection, ForecastLevel, ForecastNoticeCode, ForecastReasonCode, ForecastSide, ForecastSource, MarketForecast, ReadyForecastSide, TimeframeAssessment } from './forecast-types';
 import { candleAvailableAt, higherInterval } from './timeframe-context.ts';
@@ -37,7 +38,8 @@ export function availableForecastCandles(candles:Candle[],context:FeedClock,asOf
 function validBars(candles:Candle[],context:ForecastContext) {
   const bars:Bar[]=[],notices:ForecastNoticeCode[]=[];
   const cutoff=Number.isFinite(context.asOf)?context.asOf!:null;
-  for(let index=0;index<candles.length;index++) {
+  const start=positiveRunStart(candles,context.market,bar=>cutoff===null||availableAt(bar,context)<=cutoff);
+  for(let index=start;index<candles.length;index++) {
     const c=candles[index];
     if(![c.time,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)||!Number.isFinite(new Date(c.time*1000).getTime())||c.time<=0||c.low<=0||c.high<Math.max(c.open,c.close)||c.low>Math.min(c.open,c.close)||c.volume<0||(bars.length&&c.time<=bars[bars.length-1].time)) {notices.push('invalid-candles-excluded');continue;}
     // An end-labelled forming minute bar can legitimately carry a quote before

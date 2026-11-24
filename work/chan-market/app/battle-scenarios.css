@@ -1,0 +1,15 @@
+.battle-scenarios { margin-top: 16px; color: var(--foreground); }
+.battle-scenarios h3 { margin: 0 0 9px; font-size: 16px; font-weight: 700; }
+.battle-scenarios h3 small { margin-inline-start: 5px; font-size: 13px; color: var(--secondary); }
+.battle-scenarios p { margin: 6px 0 10px; line-height: 1.5; font-size: 14px; color: var(--secondary); }
+.battle-scenarios .battle-comparison { font-weight: 600; color: var(--foreground); }
+.battle-scenario-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.battle-scenario-grid article { padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+.battle-scenario-grid h4 { margin: 0 0 5px; font-size: 13px; font-weight: 700; color: var(--green); }
+.battle-scenario-grid [data-side=short] h4 { color: var(--red); }
+.battle-scenario-grid b,.battle-scenario-grid dd { font-variant-numeric: tabular-nums; }
+.battle-scenario-grid dl { display: grid; gap: 3px; margin: 0; }
+.battle-scenario-grid dl div { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; font-size:13px; }
+.battle-scenario-grid dt { color:var(--secondary); }
+.battle-scenario-grid dd { margin:0; font-weight:600; }
+@media(max-width:580px) { .battle-scenario-grid { grid-template-columns: minmax(0,1fr); } }

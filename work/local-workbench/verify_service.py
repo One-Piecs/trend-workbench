@@ -40,10 +40,18 @@ def check_server(resources, host_node, check_feed):
             assert session.status == 200 and session.readline() == b"event: connected\n"
             health = json.loads(read_local(port, "/health"))
             assert health["pid"] == process.pid and health["activeWindows"] == 1
+            manifest = json.loads((resources / "build-info.json").read_text(encoding="utf-8"))
+            assert health["version"] == manifest["version"]
+            assert re.fullmatch(r"[a-f0-9]{64}", manifest["buildId"]) and health["buildId"] == manifest["buildId"]
             assert "趋势判断工作台" in read_local(port, "/").decode()
             script = read_local(port, "/app.js")
             assert b"https://x.com/bi_9527zx" in script and b"https://t.me/jujishou9527" in script
             assert read_local(port, "/style.css")
+            for sound in ("rifle", "cannon", "impact"):
+                assert read_local(port, f"/battle-audio/{sound}.wav")[:4] == b"RIFF"
+            assert b"attribution" in read_local(port, "/battle-audio/credits.txt").lower()
+            search = json.loads(read_local(port, "/api/search?market=commodity&q=WTI"))
+            assert "CL=F" in json.dumps(search)
             report = json.loads(read_local(port, "/forecast-validation.json"))
             assert report == {"available": False, "matchesInstalledBuild": False}
             if check_feed:

@@ -1,10 +1,13 @@
+import {consecutiveCommodityBars} from './commodity-session.ts';
 import type { Candle, MarketData } from './market-types.ts';
 import type { MarketForecast, ReadyForecastSide } from './forecast-types.ts';
 import { candleAvailableAt, exchangeClock } from './timeframe-context.ts';
 import { captureForecastAudit, forecastVersionKey, validForecastAudit, type ForecastAudit } from './forecast-audit.ts';
 
 export type JournalEventType='condition-met'|'target1'|'target2'|'invalidated'|'expired'|'missed'|'ambiguous'|'data-gap';
-export interface ForecastEvent {id:string;type:JournalEventType;at:number;barTime:number;price:number}
+export interface ForecastEvent {id:string;type:JournalEventType;at:number;barTime:number;price:number;
+  /** Kept at observation time for a later, read-only minute review. */
+  observedParent?:{candle:Candle;instrument:MarketData['instrument']}}
 export interface ForecastRecord {
   id:string; key:string; market:MarketData['instrument']['market'];symbol:string;interval:MarketData['interval'];source:string;adjustment:string;
   createdAt:number;referencePrice:number;referenceTime:number;structureAsOf:number|null;
@@ -21,7 +24,7 @@ export const emptyJournal=():ForecastJournal=>({version:1,records:[],trimmed:0})
 export function forecastIdentity(data:Pick<MarketData,'instrument'|'interval'|'source'|'adjustment'>):string {
   return [data.instrument.market,data.instrument.symbol,data.interval,data.source,data.adjustment].join('|');
 }
-const validBar=(b:Candle)=>[b.time,b.open,b.high,b.low,b.close].every(Number.isFinite)&&b.time>0&&b.low>0&&b.high>=Math.max(b.open,b.close)&&b.low<=Math.min(b.open,b.close);
+const validBar=(b:Candle,allowSigned=false)=>[b.time,b.open,b.high,b.low,b.close].every(Number.isFinite)&&b.time>0&&(b.low>0||allowSigned)&&b.high>=Math.max(b.open,b.close)&&b.low<=Math.min(b.open,b.close);
 function localStart(date:string,market:'cn'|'us'):number {
   const wall=Date.parse(`${date}T00:00:00Z`)/1000+570*60;
   let guess=wall;
@@ -30,7 +33,7 @@ function localStart(date:string,market:'cn'|'us'):number {
 }
 export function forecastBarStart(b:Candle,data:Pick<MarketData,'instrument'|'interval'|'source'>):number {
   const market=data.instrument.market,period=data.interval;
-  if(market==='crypto'||period==='4h')return b.time;
+  if(market==='crypto'||market==='commodity'||period==='4h')return b.time;
   const clock=exchangeClock(b.time,market);
   if(['1d','1w','1M'].includes(period)) {
     const date=new Date(`${clock.date}T00:00:00Z`);
@@ -47,6 +50,7 @@ export function forecastBarStart(b:Candle,data:Pick<MarketData,'instrument'|'int
 function missingBars(previous:number,next:number,data:MarketData):boolean {
   const period=data.interval,market=data.instrument.market;
   const spans={'1m':60,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'1d':86400,'1w':604800};
+  if(market==='commodity')return !consecutiveCommodityBars(previous,next,period);
   if(market==='crypto') {
     if(period==='1M'){const d=new Date(previous*1000);return next>Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1)/1000+1;}
     return next-previous>spans[period]+1;
@@ -58,8 +62,8 @@ function missingBars(previous:number,next:number,data:MarketData):boolean {
   if(market==='cn'&&a.minute<=690&&b.minute>=780)elapsed-=90*60;
   return elapsed>spans[period as keyof typeof spans]+1;
 }
-function append(record:ForecastRecord,type:JournalEventType,b:Candle,at:number,price:number) {
-  const event:ForecastEvent={id:`${record.id}:${type}:${b.time}`,type,at,barTime:b.time,price};
+function append(record:ForecastRecord,type:JournalEventType,b:Candle,at:number,price:number,observedParent?:ForecastEvent['observedParent']) {
+  const event:ForecastEvent={id:`${record.id}:${type}:${b.time}`,type,at,barTime:b.time,price,...(observedParent?{observedParent}:{})};
   if(!record.events.some(e=>e.id===event.id))record.events.push(event);
   if(type!=='target1')record.status=type;
 }
@@ -73,7 +77,7 @@ export function advanceForecastJournal(journal:ForecastJournal,data:MarketData,n
   const earliest=Math.min(...activeRecords.map(record=>record.lastBarTime));
   const bars:Candle[]=[];
   for(const bar of data.candles){
-    if(validBar(bar)&&bar.closed!==false&&bar.time>(bars.at(-1)?.time??0)
+    if(validBar(bar,data.instrument.market==='commodity')&&bar.closed!==false&&bar.time>(bars.at(-1)?.time??0)
       &&(bar.time<=earliest||candleAvailableAt(bar,data.instrument.market,data.interval,data.source)<=now))bars.push(bar);
   }
   const records=journal.records.map(original=>{
@@ -86,7 +90,7 @@ export function advanceForecastJournal(journal:ForecastJournal,data:MarketData,n
     }
     for(const b of bars) {
       if(b.time<=r.lastBarTime)continue;
-      if(missingBars(r.lastBarTime,b.time,data)){append(r,'data-gap',b,now,b.close);events.push(r.events.at(-1)!);break;}
+      if(b.low<=0||missingBars(r.lastBarTime,b.time,data)){append(r,'data-gap',b,now,b.close);events.push(r.events.at(-1)!);break;}
       // A delayed or closed-history-only response may omit a candle already in
       // progress at publication. Its earlier extremes are not future evidence.
       if(forecastBarStart(b,data)<r.createdAt){r.lastBarTime=b.time;r.lastClose=b.close;continue;}
@@ -97,7 +101,7 @@ export function advanceForecastJournal(journal:ForecastJournal,data:MarketData,n
       const t2=buy?b.high>=p.targets[1].price:b.low<=p.targets[1].price;
       r.barsObserved++;
       if(r.status==='condition-met') {
-        if(stop&&(t1||t2))append(r,'ambiguous',b,at,p.invalidationPrice);
+        if(stop&&(t1||t2))append(r,'ambiguous',b,at,p.invalidationPrice,{candle:{...b,closed:true},instrument:{...data.instrument}});
         else if(stop)append(r,'invalidated',b,at,p.invalidationPrice);
         else if(t2)append(r,'target2',b,at,p.targets[1].price);
         else if(t1&&!r.events.some(e=>e.type==='target1'))append(r,'target1',b,at,p.targets[0].price);
@@ -176,7 +180,7 @@ const number=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
 function validRecord(v:unknown):v is ForecastRecord {
   if(!object(v)||!object(v.outlook)||!Array.isArray(v.outlook.targets)||v.outlook.targets.length!==2||!Array.isArray(v.events))return false;
   if(v.audit!==undefined&&!validForecastAudit(v.audit))return false;
-  if(!['id','key','symbol','source','adjustment'].every(k=>typeof v[k]==='string')||!['crypto','cn','us'].includes(String(v.market))||!['1m','5m','15m','30m','1h','4h','1d','1w','1M'].includes(String(v.interval)))return false;
+  if(!['id','key','symbol','source','adjustment'].every(k=>typeof v[k]==='string')||!['crypto','cn','us','commodity'].includes(String(v.market))||!['1m','5m','15m','30m','1h','4h','1d','1w','1M'].includes(String(v.interval)))return false;
   if(v.key!==[v.market,v.symbol,v.interval,v.source,v.adjustment].join('|'))return false;
   if(!['watching','condition-met','target2','invalidated','expired','missed','ambiguous','data-gap'].includes(String(v.status))||!['createdAt','referencePrice','referenceTime','lastBarTime','lastClose','barsObserved'].every(k=>number(v[k])&&(v[k] as number)>=0))return false;
   const p=v.outlook;if(!Array.isArray(p.targets)||p.status!=='ready'||!['long','short'].includes(String(p.side))||!['zoneLow','zoneHigh','triggerPrice','invalidationPrice'].every(k=>number(p[k])&&(p[k] as number)>0)||!p.targets.every(t=>object(t)&&number(t.price)&&t.price>0))return false;
@@ -184,7 +188,7 @@ function validRecord(v:unknown):v is ForecastRecord {
   const plan=p as unknown as ReadyForecastSide;
   if(!(plan.zoneLow<=plan.triggerPrice&&plan.triggerPrice<=plan.zoneHigh))return false;
   if(!(plan.side==='long'?plan.invalidationPrice<plan.zoneLow&&plan.zoneHigh<plan.targets[0].price&&plan.targets[0].price<plan.targets[1].price:plan.invalidationPrice>plan.zoneHigh&&plan.zoneLow>plan.targets[0].price&&plan.targets[0].price>plan.targets[1].price))return false;
-  return v.events.every(e=>object(e)&&typeof e.id==='string'&&['condition-met','target1','target2','invalidated','expired','missed','ambiguous','data-gap'].includes(String(e.type))&&number(e.at)&&number(e.barTime)&&number(e.price)&&e.price>0);
+  return v.events.every(e=>object(e)&&typeof e.id==='string'&&['condition-met','target1','target2','invalidated','expired','missed','ambiguous','data-gap'].includes(String(e.type))&&number(e.at)&&number(e.barTime)&&number(e.price)&&(e.price>0||v.market==='commodity'&&e.type==='data-gap'));
 }
 export function readForecastJournal(storage?:StorageLike):ForecastJournal {
   try {const s=storage??(typeof window!=='undefined'?window.localStorage:undefined),value:unknown=JSON.parse(s?.getItem(JOURNAL_KEY)||'null');

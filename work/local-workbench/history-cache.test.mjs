@@ -1,0 +1,86 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createHistoryCache} from './history-cache.mjs';
+
+const start=Date.parse('2026-01-01T00:00:00Z')/1000;
+const instrument={market:'crypto',symbol:'BTCUSDT',id:'crypto:BTCUSDT',name:'Bitcoin',exchange:'',currency:'USDT'};
+const source='Binance 公共现货行情 · BTCUSDT',adjustment='原始成交价格，不复权';
+const minute=i=>start+i*60;
+const bar=(i)=>({time:minute(i),open:10,high:12,low:9,close:11,volume:i+1,closed:true});
+const range=(from,to)=>Array.from({length:to-from+1},(_,i)=>bar(i+from));
+const feed=(candles,patch={})=>({instrument,interval:'1m',source,adjustment,delayNotice:'',warnings:[],availableIntervals:['1m'],
+  asOf:new Date((minute(5000))*1000).toISOString(),candles,...patch});
+const pageParams=(before)=>new URLSearchParams({market:'crypto',symbol:'BTCUSDT',interval:'1m',source,adjustment,before:String(before),limit:'500'});
+function fake(from=0,to=799){
+  let current=feed(range(from,to)),fetched=[],requests=[];
+  return {
+    getCandles:async(_m,_s,_i,n)=>{fetched.push(n);return {...current,candles:current.candles.slice(-n)};},
+    getOlderHistory:async p=>{requests.push(p);const i=(Number(p.get('before'))-start)/60;
+      return {...Object.fromEntries(p),status:'more',candles:range(Math.max(0,i-Number(p.get('limit'))),i-1)};},
+    set:v=>{current=v;},fetched,requests,
+  };
+}
+async function fetchBars(archive){return archive.candles('crypto','BTCUSDT','1m',800);}
+
+test('reopen database, show only completed cached bars, merge a corrected overlap and preserve forming updates only in memory',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'trend-db-')),filename=join(dir,'history.sqlite'),io=fake();
+  let archive=createHistoryCache({filename,...io});
+  try{
+    io.set(feed([...range(0,798),{...bar(799),closed:false}]));
+    assert.equal((await fetchBars(archive)).candles.length,800);
+    archive.close();archive=createHistoryCache({filename,...io});
+    assert.equal(archive.preview('crypto','BTCUSDT','1m').candles.at(-1).time,minute(798));
+    const newer=range(704,803);newer[0].high=15;newer.at(-1).closed=false;
+    io.set(feed(newer));
+    const updated=await fetchBars(archive);
+    assert.deepEqual(io.fetched,[800,100]);assert.equal(updated.candles.length,800);
+    assert.equal(updated.candles.find(b=>b.time===minute(704)).high,15);
+    assert.equal(updated.candles.at(-1).closed,false);
+    assert.equal(archive.preview('crypto','BTCUSDT','1m').candles.at(-1).time,minute(802));
+    assert.equal(archive.preview('us','BTCUSDT','1m'),null);
+  }finally{archive.close();await rm(dir,{recursive:true});}
+});
+test('disconnected windows backfill from same source and then older chart pages are reusable without a second request',async()=>{
+  const io=fake(),archive=createHistoryCache({filename:':memory:',...io});
+  try{
+    await fetchBars(archive);io.set(feed(range(952,1051)));
+    const full=await fetchBars(archive),t=full.candles.map(b=>b.time);
+    assert.deepEqual(t,range(252,1051).map(b=>b.time));assert.equal(io.requests.length,1);
+    const params=pageParams(t[0]);const page=await archive.older(params);
+    assert.equal(page.candles.length,252);assert.equal(io.requests.length,1);
+    const intraday=await archive.older(pageParams(t[0]+39));
+    assert.equal(intraday.candles.at(-1).time,t[0]);assert.equal(io.requests.length,1);
+  }finally{archive.close();}
+});
+test('changed adjusted prices never connect to the earlier price scale, and private data cannot enter disk cache',async()=>{
+  const io=fake(),archive=createHistoryCache({filename:':memory:',...io});
+  try{
+    const label='前复权';
+    io.set(feed(range(0,799),{adjustment:label}));await fetchBars(archive);
+    const rebased=range(704,803).map(b=>({...b,open:20,high:24,low:18,close:22}));
+    io.set(feed(rebased,{adjustment:label}));await fetchBars(archive);
+    assert.equal(archive.preview('crypto','BTCUSDT','1m').candles.some(b=>b.close===11),false);
+    io.set(feed(range(704,805),{source:'Barchart private entitlement'}));await fetchBars(archive);
+    assert.equal(archive.preview('crypto','BTCUSDT','1m').source,source);
+  }finally{archive.close();}
+});
+test('unwritable cache degrades to normal network requests',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'trend-bad-db-')),file=join(dir,'file');await writeFile(file,'x');
+  const io=fake(),archive=createHistoryCache({filename:join(file,'db'),...io});
+  try{assert.equal((await fetchBars(archive)).candles.length,800);assert.equal(archive.preview('crypto','BTCUSDT','1m'),null);}
+  finally{archive.close();await rm(dir,{recursive:true});}
+});
+test('an internal source gap is filled only from a verified page and survives a repeat snapshot which still omits that minute',async()=>{
+  const io=fake(),missing=feed(range(0,799).filter(b=>b.time!==minute(790)),{adjustment:'前复权'});
+  io.set(missing);
+  const archive=createHistoryCache({filename:':memory:',...io,latestHistoryGap:()=>({after:minute(789),before:minute(791),limit:2})});
+  try{
+    await fetchBars(archive);await new Promise(r=>setImmediate(r));
+    assert.equal(archive.preview('crypto','BTCUSDT','1m').candles.length,800);
+    const recovered=await fetchBars(archive);assert.equal(recovered.candles.length,800);
+    assert.equal(recovered.candles.filter(b=>b.time===minute(790)).length,1);
+  }finally{archive.close();}
+});

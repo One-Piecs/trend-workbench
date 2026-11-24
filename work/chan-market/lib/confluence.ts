@@ -1,6 +1,8 @@
 import type { Candle, Interval, Market } from './market-types';
 import type { AnalysisInput, Confluence, ConfluenceContext, ConfluenceDirection, ConfluenceEvidence, ConfluenceSide, HigherConfluence, MacdConfluence, VolumeConfluence } from './confluence-types';
 import { candleAvailableAt, eligibleHigherCandles, exchangeClock, higherInterval } from './timeframe-context.ts';
+import {positiveRunStart} from './commodity-analysis.ts';
+import {commodityTradingMinutes} from './commodity-session.ts';
 
 type MacdPoint = { time: number; dif: number; dea: number; hist: number };
 const intraday = (interval: Interval) => !['1d', '1w', '1M'].includes(interval);
@@ -86,9 +88,10 @@ function elapsedTradingMinutes(from: number, to: number, market: 'cn' | 'us'): n
   }
   return total;
 }
-function stale(lastAvailable: number, asOf: number, market: Market, interval: Interval): boolean {
+export function higherDataStale(lastAvailable: number, asOf: number, market: Market, interval: Interval): boolean {
   const duration: Record<Interval, number> = { '1m':60,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'1d':86400,'1w':604800,'1M':2678400 };
   if (market === 'crypto' || !intraday(interval)) return asOf - lastAvailable > duration[interval] * (interval === '1d' && market !== 'crypto' ? 5 : 2);
+  if (market === 'commodity') return commodityTradingMinutes(lastAvailable,asOf) > duration[interval] / 60 * 2;
   return elapsedTradingMinutes(lastAvailable, asOf, market) > duration[interval] / 60 * 2;
 }
 
@@ -111,14 +114,15 @@ export function evaluateHigherConfluence(context: ConfluenceContext, asOf: numbe
   // Validate order without sorting malformed data into apparently valid history.
   const capturedAt = Date.parse(data.asOf) / 1000;
   const eligible = eligibleHigherCandles(data, Math.min(asOf, capturedAt)), bars: Candle[] = [];
-  for (const c of eligible) {
+  for (let i=positiveRunStart(eligible,context.market);i<eligible.length;i++) {
+    const c=eligible[i];
     if (![c.time,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite) || c.low <= 0 || c.high < Math.max(c.open,c.close) || c.low > Math.min(c.open,c.close) || c.volume < 0 || (bars.length && c.time <= bars[bars.length-1].time)) continue;
     bars.push(c);
   }
   const last = bars.at(-1), latest = last ? candleAvailableAt(last, context.market, expected, data.source) : null;
   const result = { ...base, bars: bars.length, asOf: latest };
   if (bars.length < 35 || latest === null) return result;
-  if (stale(latest, asOf, context.market, expected)) return { ...result, status: 'stale' };
+  if (higherDataStale(latest, asOf, context.market, expected)) return { ...result, status: 'stale' };
   return { ...result, status: 'ready', direction: deriveDirection(bars) };
 }
 

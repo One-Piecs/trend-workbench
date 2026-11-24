@@ -1,0 +1,22 @@
+多空之战 · 现场录音署名 / Battle audio credits
+
+rifle.wav
+“308_rifle_03_50yds_dwnrng02.wav” by gezortenplotz
+https://freesound.org/people/gezortenplotz/sounds/43753/
+Creative Commons Attribution 3.0 Unported (CC BY 3.0)
+https://creativecommons.org/licenses/by/3.0/
+
+cannon.wav
+“canon.aif” by man
+https://freesound.org/people/man/sounds/14615/
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+impact.wav
+“merrimack-st-demolition.aif” by alienistcog
+https://freesound.org/people/alienistcog/sounds/125937/
+CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/
+
+工作台从上述录音节选枪声、炮声和建筑拆除爆破声，混为单声道、滤除低频杂音、调整音量并做了短淡入淡出。
+Adaptations by Trend Workbench: excerpted from Freesound previews, mixed to mono, high-pass filtered, peak-normalized and faded at the cut points.

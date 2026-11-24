@@ -201,20 +201,34 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
     if(directories.size>=256)directories.delete(directories.keys().next().value!);
     directories.set(key,{expires:now()+30*60000,value});return waitForCaller(value);
   }
-  async function candlesFor(provider:CryptoProvider,pair:Pair,interval:Interval,limit:number,signal:AbortSignal,callerSignal?:AbortSignal):Promise<Candle[]> {
-    const observed=(input:Candle[])=>clean(input).filter(c=>c.time*1000<=now());
+  async function candlesFor(provider:CryptoProvider,pair:Pair,interval:Interval,limit:number,signal:AbortSignal,callerSignal?:AbortSignal,before?:number):Promise<Candle[]> {
+    const historical=before!==undefined;
+    function readPage(payload:unknown) {
+      if(historical&&(!Array.isArray(payload)||payload.some(row=>!Array.isArray(row)||row.length<6||row.slice(0,6).some(v=>v==null||v===''))))throw new CryptoDataError('历史行情格式不完整。');
+      return rows(payload);
+    }
+    const observed=(input:Candle[])=>{
+      const parsed=clean(input).filter(c=>c.time*1000<=now());
+      if(historical&&parsed.some(c=>c.time!==currentPeriodStart(interval,c.time*1000)))throw new CryptoDataError('历史K线周期不匹配。');
+      const eligible=before===undefined?parsed:parsed.filter(c=>c.time<before&&c.closed===true);
+      if(historical&&input.length&&!eligible.length)throw new CryptoDataError('历史行情未返回游标之前的有效K线。');
+      return eligible;
+    };
     if(provider==='bitget'||provider==='bybit') {
       let raw:unknown[][];
       if(provider==='bitget') {
         // 1M uses UTC+8 at Bitget; 1Mutc explicitly requests UTC month boundaries.
-        const payload=record(await get(provider,`https://api.bitget.com/api/v2/spot/market/candles?symbol=${encodeURIComponent(pair.providerId)}&granularity=${bitgetBars[interval]}&limit=${limit}`,signal));
+        const resource=historical?'history-candles':'candles';
+        const cursor=before===undefined?'':`&endTime=${before*1000-1}`;
+        const payload=record(await get(provider,`https://api.bitget.com/api/v2/spot/market/${resource}?symbol=${encodeURIComponent(pair.providerId)}&granularity=${bitgetBars[interval]}&limit=${historical?Math.min(limit,200):limit}${cursor}`,signal));
         if(payload.code!=='00000')throw new CryptoDataError(`Bitget 暂无 ${pair.providerId} 的该周期数据。`,404);
-        raw=rows(payload.data);
+        raw=readPage(payload.data);
       } else {
-        const payload=record(await get(provider,`https://api.bybit.com/v5/market/kline?category=spot&symbol=${encodeURIComponent(pair.providerId)}&interval=${bybitBars[interval]}&limit=${limit}`,signal));
+        const cursor=before===undefined?'':`&end=${before*1000-1}`;
+        const payload=record(await get(provider,`https://api.bybit.com/v5/market/kline?category=spot&symbol=${encodeURIComponent(pair.providerId)}&interval=${bybitBars[interval]}&limit=${limit}${cursor}`,signal));
         const data=record(payload.result);
         if(payload.retCode!==0||data.category!=='spot'||data.symbol!==pair.providerId)throw new CryptoDataError('Bybit 行情响应的现货交易对不匹配。');
-        raw=rows(data.list);
+        raw=readPage(data.list);
       }
       const parsed=observed(raw.map(r=>{
         const time=Number(r[0])/1000,d=new Date(time*1000);
@@ -226,14 +240,14 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
       return parsed.slice(-limit);
     }
     if(provider==='binance') {
-      let accumulated:Candle[]=[],cursor:number|undefined;
+      let accumulated:Candle[]=[],cursor=before===undefined?undefined:before*1000-1;
       // A venue may return fewer rows than requested. Move backwards using its
       // real timestamps, with both a page bound and a strict progress check.
-      for(let page=0;page<4&&accumulated.length<limit;page++) {
+      for(let page=0;page<(historical?1:4)&&accumulated.length<limit;page++) {
         const query=new URLSearchParams({symbol:pair.providerId,interval,limit:String(Math.min(1000,limit-accumulated.length))});
         if(cursor!==undefined)query.set('endTime',String(cursor));
         let raw:unknown[][];
-        try { raw=rows(await get(provider,`https://data-api.binance.vision/api/v3/klines?${query}`,signal)); }
+        try { raw=readPage(await get(provider,`https://data-api.binance.vision/api/v3/klines?${query}`,signal)); }
         catch(error) {
           if(callerSignal?.aborted||!accumulated.length)throw error;
           break; // An unavailable backfill page must not erase the live window.
@@ -250,16 +264,16 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
       return accumulated.slice(-limit);
     }
     if(provider==='okx') {
-      let accumulated:Candle[]=[],cursor:number|undefined;
-      // Latest endpoint has 1,440 bars: enough for the tool's capped 1,000-bar window.
-      for(let page=0;page<4&&accumulated.length<limit;page++) {
+      let accumulated:Candle[]=[],cursor=before===undefined?undefined:before*1000;
+      const resource=historical?'history-candles':'candles';
+      for(let page=0;page<(historical?1:4)&&accumulated.length<limit;page++) {
         const query=new URLSearchParams({instId:pair.providerId,bar:okxBars[interval],limit:String(Math.min(300,limit-accumulated.length+(cursor===undefined?0:1)))});
         if(cursor!==undefined)query.set('after',String(cursor));
         let pageRows:unknown[][];
         try {
-          const payload=record(await get(provider,`https://www.okx.com/api/v5/market/candles?${query}`,signal));
+          const payload=record(await get(provider,`https://www.okx.com/api/v5/market/${resource}?${query}`,signal));
           if(payload.code!=='0')throw new CryptoDataError(`OKX 暂无 ${pair.providerId} 的该周期数据。`,404);
-          pageRows=rows(payload.data);
+          pageRows=readPage(payload.data);
         } catch(error) {
           if(callerSignal?.aborted||!accumulated.length)throw error;
           break;
@@ -377,9 +391,26 @@ export function createCryptoClient(fetcher: Fetcher = (url,init)=>fetch(url,init
     if(!succeeded)throw new CryptoDataError('当前无法连接现货目录，请稍后重试。');
     return [];
   }
-  return {getCryptoCandles,searchCrypto,resetMarketNetworkFailures};
+  async function getCryptoHistory(symbol:string,interval:Interval,limit:number,before:number,source:string,adjustment:string):Promise<Candle[]|null>{
+    const provider=(Object.keys(labels) as CryptoProvider[]).find(key=>source.startsWith(labels[key]+' 公共现货行情 · '));
+    if(!provider||adjustment!=='原始成交价格，不复权')return null;
+    const signal=AbortSignal.timeout(12000);
+    const pair=(await directory(provider,signal,symbol)).find(p=>p.symbol===symbol&&source===labels[provider]+' 公共现货行情 · '+p.providerId);
+    if(!pair)throw new CryptoDataError('历史行情交易对与当前图表不一致。');
+    if(provider==='kraken'){
+      // No backwards cursor. A small initial snapshot can still use the
+      // remainder of the same feed's recent 720-bar window.
+      const recent=await candlesFor(provider,pair,interval,720,signal,signal);
+      if(!recent.length)throw new CryptoDataError('历史行情未返回有效K线。');
+      const older=recent.filter(c=>c.time<before&&c.closed===true).slice(-limit);
+      return older.length?older:null;
+    }
+    return candlesFor(provider,pair,interval,limit,signal,signal,before);
+  }
+  return {getCryptoCandles,getCryptoHistory,searchCrypto,resetMarketNetworkFailures};
 }
 const client=createCryptoClient();
 export const getCryptoCandles=client.getCryptoCandles;
+export const getCryptoHistory=client.getCryptoHistory;
 export const searchCrypto=client.searchCrypto;
 export const resetMarketNetworkFailures=client.resetMarketNetworkFailures;

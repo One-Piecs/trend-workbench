@@ -39,13 +39,20 @@ test('US expected delay is distinguishable from hard stale data',()=>{
   assert.equal(delayed.state,'delayed');assert.equal(delayed.allowSignals,true);
   assert.equal(getFeedHealth(data(now,'2026-11-13T14:55:00Z','us'),{nowMs:ms(now),lastSuccessAtMs:ms(now)}).state,'stale');
 });
-test('unknown source and unknown holiday/halt date suppress new signals without claiming a feed outage',()=>{
+test('an unknown source and a verified exchange holiday each pause new signals',()=>{
   const now='2026-11-13T10:00:30Z';
   const unknown=getFeedHealth(data(now,now,'crypto','1m','Unspecified feed'),{nowMs:ms(now),lastSuccessAtMs:ms(now)});
   assert.equal(unknown.state,'unknown');assert.equal(unknown.allowSignals,false);
   const holiday='2026-11-26T17:00:00Z';
   const gap=getFeedHealth(data(holiday,'2026-11-25T20:59:00Z','us'),{nowMs:ms(holiday),lastSuccessAtMs:ms(holiday)});
-  assert.equal(gap.state,'unknown');assert.equal(gap.allowSignals,false);
+  assert.equal(gap.state,'closed');assert.equal(gap.allowSignals,false);
+});
+test('half days, Chinese holidays, missing instrument data and uncovered dates remain distinct',()=>{
+  const health=(now:string,last:string,market:'cn'|'us')=>getFeedHealth(data(now,last,market),{nowMs:ms(now)});
+  assert.equal(health('2026-11-27T18:01:00Z','2026-11-27T17:59:00Z','us').label,'今日已提前收市');
+  assert.equal(health('2026-10-01T02:12:00Z','2026-09-30T07:00:00Z','cn').label,'今日休市');
+  assert.equal(health('2026-11-30T17:00:00Z','2026-11-27T17:59:00Z','us').label,'缺少今日行情');
+  assert.equal(health('2040-05-02T14:00:00Z','2040-05-02T14:00:00Z','us').allowSignals,false);
 });
 test('end-labelled China forming hours may be ahead, while future crypto starts are rejected',()=>{
   const now='2026-11-13T02:00:00Z',future='2026-11-13T02:30:00Z';

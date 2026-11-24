@@ -8,9 +8,8 @@ $appDirectory = [IO.Path]::GetFullPath($PSScriptRoot)
 $nodePath = Join-Path $appDirectory 'runtime\node.exe'
 $serverPath = Join-Path $appDirectory 'server.mjs'
 $entryPath = Join-Path $appDirectory 'public\index.html'
+$manifestPath = Join-Path $appDirectory 'build-info.json'
 $logDirectory = Join-Path $appDirectory 'logs'
-$serverPort = 43127
-$appUrl = 'http://127.0.0.1:43127/'
 $launchMutex = $null
 $ownsMutex = $false
 $startedProcess = $null
@@ -80,11 +79,39 @@ function Get-VerifiedServerProcess([int]$serverPid) {
     return $process
 }
 
-function Test-WorkbenchHealth($health) {
-    if ($null -eq $health -or $health.app -ne 'trend-workbench' -or $health.version -ne '1.3-local') { return $false }
+function Test-WorkbenchIdentity($health) {
+    if ($null -eq $health -or $health.app -ne 'trend-workbench' -or [string]::IsNullOrWhiteSpace($health.version)) { return $false }
     $healthPid = 0
     if (![int]::TryParse([string]$health.pid, [ref]$healthPid)) { return $false }
-    return $null -ne (Get-VerifiedServerProcess $healthPid)
+    if ($null -eq (Get-VerifiedServerProcess $healthPid)) { return $false }
+    $listener = Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort $serverPort -OwningProcess $healthPid -ErrorAction SilentlyContinue
+    return $null -ne $listener
+}
+
+function Test-WorkbenchHealth($health) {
+    return $null -ne $health -and $health.buildId -ceq $expectedBuild -and (Test-WorkbenchIdentity $health)
+}
+
+function Restart-PreviousBackend($health) {
+    # Browser windows own the UI state. Their EventSource reconnects to this
+    # origin after the read-only market service is replaced.
+    $previous = Get-Process -Id $health.pid -ErrorAction SilentlyContinue
+    if ($null -eq $previous) { return }
+    try {
+        # Keep the handle to this specific process during the identity checks.
+        $null = $previous.Handle
+        if ($previous.HasExited) { return }
+        if (!(Test-WorkbenchIdentity $health)) {
+            if ($previous.HasExited) { return }
+            throw '无法核对旧版后台的身份，请稍后重试。'
+        }
+        Write-LauncherLog ('Replacing verified previous backend PID ' + $previous.Id + ' (' + $health.activeWindows + ' sessions)')
+        try { $previous.Kill() } catch {
+            if (!$previous.HasExited) { throw }
+        }
+        if (!$previous.WaitForExit(8000)) { throw '旧版工作台后台未能及时退出，请重试。' }
+    }
+    finally { $previous.Dispose() }
 }
 
 function Write-LauncherLog([string]$message) {
@@ -96,9 +123,14 @@ function Write-LauncherLog([string]$message) {
 }
 
 try {
-    foreach ($requiredPath in @($nodePath, $serverPath, $entryPath)) {
+    foreach ($requiredPath in @($nodePath, $serverPath, $entryPath, $manifestPath)) {
         if (!(Test-Path -LiteralPath $requiredPath -PathType Leaf)) { throw ('程序文件缺失：' + $requiredPath + [Environment]::NewLine + '请保留完整的“趋势判断工作台”文件夹。') }
     }
+    $manifest = Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    $expectedBuild = [string]$manifest.buildId
+    $serverPort = [int]$manifest.port
+    if ($expectedBuild -cnotmatch '^[0-9a-f]{64}$' -or $serverPort -lt 1024 -or $serverPort -gt 65535) { throw '工作台构建信息不完整，请重新生成或解压程序。' }
+    $appUrl = 'http://127.0.0.1:' + $serverPort + '/'
     $edgeCandidates = @()
     if (${env:ProgramFiles(x86)}) { $edgeCandidates += Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe' }
     if ($env:ProgramFiles) { $edgeCandidates += Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe' }
@@ -106,17 +138,22 @@ try {
     $edgePath = $edgeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     if (!$NoWindow -and !$edgePath) { throw '没有找到 Microsoft Edge，无法打开独立窗口。请先安装或修复 Windows 自带的 Edge。' }
     if ($CheckOnly) {
-        [pscustomobject]@{ AppDirectory=$appDirectory; Runtime=$nodePath; Server=$serverPath; Browser=$edgePath; URL=$appUrl }
+        [pscustomobject]@{ AppDirectory=$appDirectory; Runtime=$nodePath; Server=$serverPath; Browser=$edgePath; URL=$appUrl; BuildId=$expectedBuild }
         exit 0
     }
     Initialize-ArgumentParser
-    $launchMutex = New-Object Threading.Mutex($false, 'Local\TrendWorkbenchLocal43127')
+    $launchMutex = New-Object Threading.Mutex($false, ('Local\TrendWorkbenchLocal' + $serverPort))
     try { $ownsMutex = $launchMutex.WaitOne(45000) }
     catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
-    if (!$ownsMutex) { throw '工作台正在启动，等待时间过长。请稍后再次打开。' }
+    if (!$ownsMutex) {
+        throw '上一次启动仍在处理中，请查看工作台启动日志。'
+    }
     $health = Get-LocalHealth
     if (!(Test-WorkbenchHealth $health)) {
-        if ($null -ne $health -or (Test-LocalPortInUse)) { throw '本机端口 43127 已被其他程序占用。工作台没有停止或修改该程序；请先关闭占用端口的程序再重试。' }
+        if (Test-WorkbenchIdentity $health) {
+            Restart-PreviousBackend $health
+        }
+        if (Test-LocalPortInUse) { throw ('本机端口 ' + $serverPort + ' 已由其他服务使用。请关闭占用端口的程序后重试。') }
         [void][IO.Directory]::CreateDirectory($logDirectory)
         $serverArguments = '"' + $serverPath + '" --port ' + $serverPort
         $startedProcess = Start-Process -FilePath $nodePath -ArgumentList $serverArguments -WorkingDirectory $appDirectory -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logDirectory 'server.stdout.log') -RedirectStandardError (Join-Path $logDirectory 'server.stderr.log')

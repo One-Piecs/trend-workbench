@@ -1,3 +1,4 @@
+import {positiveRunStart} from './commodity-analysis.ts';
 import type { Analysis, Candle, Center, Factor, Fractal, Point, Scenario, Signal, StructureLine, StructurePriceRange, TradeSetup, TradePlanSession } from './market-types';
 import { buildTradePlans, coordinateTradePlans } from './trade-plans.ts';
 import { buildConfluence } from './confluence.ts';
@@ -46,10 +47,10 @@ function confirmedRuns(lines:StructureLine[]):StructureLine[][] {
 }
 
 /** Preserve input indices: drawing indices always refer to the caller's raw candles. */
-function validClosed(candles: Candle[]) {
+function validClosed(candles: Candle[], start = 0) {
   const bars: IndexedCandle[] = [];
   let invalid = 0;
-  for (let index = 0; index < candles.length; index++) {
+  for (let index = start; index < candles.length; index++) {
     const b = candles[index];
     if (b.closed === false) continue;
     if (![b.time,b.open,b.high,b.low,b.close,b.volume].every(Number.isFinite) || b.low <= 0 || b.high < Math.max(b.open,b.close) || b.low > Math.min(b.open,b.close) || b.volume < 0 || (bars.length && b.time <= bars[bars.length-1].time)) { invalid++; continue; }
@@ -455,10 +456,12 @@ function scenarios(bars:IndexedCandle[], structure:ReturnType<typeof core>):Scen
 
 export interface AnalysisOptions { penMode?:'new'|'old'; horizon?:number; planSession?:TradePlanSession; context?:ConfluenceContext; skipCalibration?:boolean; skipTradePlans?:boolean }
 export function analyze(candles:Candle[], options:AnalysisOptions={}):Analysis {
-  const mode=options.penMode||'new',{bars,invalid}=validClosed(candles),s=core(bars,mode);
+  const market=options.context?.market;
+  const start=positiveRunStart(candles,market,bar=>bar.closed!==false);
+  const mode=options.penMode||'new',{bars,invalid}=validClosed(candles,start),s=core(bars,mode);
   addDivergenceSignals(bars,s);
   // Validation can skip the descriptive histogram without altering any plan.
-  const {calibration}=historicalCalibration(options.skipCalibration?[]:candles,options);
+  const {calibration}=historicalCalibration(options.skipCalibration?[]:start?candles.slice(start):candles,options);
   if(options.skipCalibration)calibration.method='已跳过历史频率计算；仅用于逐时评估';
   // Forward-outlook mode retains imported legacy records only. It does not
   // create or advance simulated entries while calculating current structure.
@@ -466,7 +469,7 @@ export function analyze(candles:Candle[], options:AnalysisOptions={}):Analysis {
     ?{tradePlans:options.planSession?.plans??[],decision:coordinateTradePlans(options.planSession?.plans??[],s.bias,bars.at(-1)?.time??0).decision,planSession:options.planSession}
     :buildTradePlans(bars,s,prefix=>core(prefix,mode),options.planSession);
   const confluence=options.context?buildConfluence(bars,s.macd,options.context,higherBars=>{
-    const higher=core(validClosed(higherBars).bars,mode);
+    const higher=core(validClosed(higherBars,positiveRunStart(higherBars,market)).bars,mode);
     // Structural background excludes its MACD factor: the current MACD remains
     // one evidence family rather than being counted again through the bias %.
     const structural=higher.bias.factors.slice(0,3).reduce((sum,f)=>sum+f.value,0);

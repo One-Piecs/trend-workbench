@@ -1,0 +1,34 @@
+.army-stage {
+  --army-green: #9df5bd; --army-red: #ffada1;
+  position: relative; isolation: isolate; width: 100%;
+  height: clamp(264px, 40vw, 410px); overflow: hidden; margin: 12px 0 3px;
+  border: 1px solid #425963; border-radius: 10px; background: #1c303e;
+  font-variant-numeric: tabular-nums;
+}
+.army-stage > canvas { display: block; width: 100%; height: 100%; }
+.army-hud { position: absolute; inset: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 8px; padding: 11px 13px 20px; pointer-events: none;
+  background: linear-gradient(180deg, #061520ba, transparent); }
+.army-name { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #80c39478; background: #122d26e0;
+  padding: 5px 8px; border-radius: 4px; color: var(--army-green); font: 700 12px/1.1 var(--font-sans,system-ui,sans-serif); }
+.army-name > i { width: 8px; height: 11px; background: currentColor; clip-path: polygon(0 0,100% 0,100% 100%,50% 76%,0 100%); }
+.army-red { color: var(--army-red); border-color: #d9958a6b; background: #35252bcf; }
+.army-defense { pointer-events: auto; display: inline-block; position: relative; width: 34px; height: 6px;
+  background: #91a2ac30; mask-image: repeating-linear-gradient(90deg,#000 0 5px,transparent 5px 7px); }
+.army-defense i { display: block; height: 100%; background: currentColor; }
+.army-red .army-defense { transform: scaleX(-1); }
+.army-readouts { position: absolute; inset: auto 6px 7px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; pointer-events: none; }
+.army-readout { justify-self: center; max-width: 100%; display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 2px 7px; text-align: center; padding: 4px 8px; border: 1px solid; border-radius: 4px;
+  font: 600 12px/1.2 var(--font-sans,system-ui,sans-serif); }
+.army-readout[data-side="buy"] { color: var(--army-green); background: #102a20f2; border-color: #78c99188; }
+.army-readout[data-side="sell"] { color: var(--army-red); background: #382124f2; border-color: #dc898288; }
+.army-readout span { white-space: nowrap; }
+.army-readout strong { color: #f5fafb; font-weight: 700; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  .army-stage { height: clamp(245px, 60vw, 284px); }
+  .army-hud { padding: 8px; }
+  .army-name { gap: 5px; font-size: 11px; }
+  .army-defense { width: 25px; }
+  .army-readout { font-size: 11px; padding: 4px 7px; }
+}

@@ -1,0 +1,210 @@
+/* Each palette defines surfaces, interface accents and market colors independently.
+   The original mint palette comes from globals.css and trading-chart.css. */
+html[data-workbench-theme="tradingview"] {
+  color-scheme: dark;
+  --background: #10131a;
+  --card: #1e222d;
+  --muted: #252a37;
+  --border: #363d4e;
+  --outline: #626c80;
+  --foreground: #eff1f5;
+  --secondary: #c4cad6;
+  --muted-foreground: #a6afc0;
+  --primary: #94b1ff;
+  --ring: #90b1ff;
+  --selected: #28395d;
+  --green: #53cbb1;
+  --red: #ff8587;
+  --gold: #e2b764;
+  --blue: #84b4ff;
+  --green-bar: #26a69a;
+  --red-bar: #ef5350;
+  --bench-canvas: #131722;
+  --bench-sidebar: #191d27;
+  --bench-grid: #282e3c;
+  --bench-button: #2962ff;
+  --bench-button-ink: #fff;
+  --bench-support: #8fc4de;
+  --bench-vwap: #c897ff;
+  --bench-up-badge: #12695c;
+  --bench-down-badge: #a63a44;
+  --bench-cross-bg: #414b5e;
+  --bench-backdrop: none;
+  --bench-corner: 4px;
+  --bench-shadow: none;
+}
+
+html[data-workbench-theme="parchment"] {
+  color-scheme: light;
+  --background: #ede6d9;
+  --card: #fffcf6;
+  --muted: #f4ecdf;
+  --border: #d9cdbb;
+  --outline: #b4a18a;
+  --foreground: #30291f;
+  --secondary: #534638;
+  --muted-foreground: #71614e;
+  --primary: #87451f;
+  --ring: #9e522a;
+  --selected: #f4e2c8;
+  --green: #236548;
+  --red: #a33c37;
+  --gold: #825b13;
+  --blue: #356877;
+  --green-bar: #207555;
+  --red-bar: #ab4540;
+  --bench-canvas: #fffaf0;
+  --bench-sidebar: #f7f1e6;
+  --bench-grid: #e6dccb;
+  --bench-button: #924721;
+  --bench-button-ink: #fffaf0;
+  --bench-support: #486b68;
+  --bench-vwap: #805087;
+  --bench-up-badge: #29634e;
+  --bench-down-badge: #9c3c38;
+  --bench-cross-bg: #564638;
+  --bench-backdrop: linear-gradient(135deg, #eadecb, #f1eadf 45%, #eee8df);
+  --bench-corner: 7px;
+  --bench-shadow: 0 2px 6px rgb(78 55 31 / 7%);
+}
+
+html[data-workbench-theme="glacier"] {
+  color-scheme: light;
+  --background: #e3eff7;
+  --card: #fbfdff;
+  --muted: #eaf2f9;
+  --border: #cadbe9;
+  --outline: #9ab5ca;
+  --foreground: #19304a;
+  --secondary: #354f6d;
+  --muted-foreground: #51677d;
+  --primary: #2456a6;
+  --ring: #2c66b4;
+  --selected: #d9e9fc;
+  --green: #096d5b;
+  --red: #af3151;
+  --gold: #8a5917;
+  --blue: #2d63a0;
+  --green-bar: #007967;
+  --red-bar: #b93657;
+  --bench-canvas: #f4faff;
+  --bench-sidebar: #eef6fd;
+  --bench-grid: #d5e4f0;
+  --bench-button: #2456a6;
+  --bench-button-ink: white;
+  --bench-support: #2d657c;
+  --bench-vwap: #755399;
+  --bench-up-badge: #006955;
+  --bench-down-badge: #a12e4d;
+  --bench-cross-bg: #2f465e;
+  --bench-backdrop: linear-gradient(115deg, #d4e7f5, #e9f3fb 52%, #dfebf6);
+  --bench-corner: 10px;
+  --bench-shadow: 0 2px 8px rgb(42 77 117 / 6%);
+}
+
+html[data-workbench-theme="amethyst"] {
+  color-scheme: dark;
+  --background: #19151f;
+  --card: #2b2337;
+  --muted: #352c42;
+  --border: #493d56;
+  --outline: #796a89;
+  --foreground: #f3edf8;
+  --secondary: #d6cbdc;
+  --muted-foreground: #baacbf;
+  --primary: #d7b4f4;
+  --ring: #ddb6ff;
+  --selected: #493657;
+  --green: #8bd6b8;
+  --red: #f397af;
+  --gold: #e4b675;
+  --blue: #a3b9f6;
+  --green-bar: #63cbb4;
+  --red-bar: #ef829b;
+  --bench-canvas: #211c2c;
+  --bench-sidebar: #272031;
+  --bench-grid: #393042;
+  --bench-button: #ae85d5;
+  --bench-button-ink: #24182d;
+  --bench-support: #a2c4cf;
+  --bench-vwap: #d3a3ed;
+  --bench-up-badge: #2b695e;
+  --bench-down-badge: #873e59;
+  --bench-cross-bg: #594a64;
+  --bench-backdrop: radial-gradient(ellipse at 72% 0%, #392c46, transparent 62%);
+  --bench-corner: 9px;
+  --bench-shadow: 0 2px 9px rgb(11 7 16 / 18%);
+}
+
+/* These formulas keep status tints readable on both light and dark cards.
+   Market up/down colors never double as the selected tool's accent. */
+html[data-workbench-theme]:not([data-workbench-theme="mint"]) {
+  --green-bg: color-mix(in srgb, var(--green) 10%, var(--card));
+  --red-bg: color-mix(in srgb, var(--red) 10%, var(--card));
+  --gold-bg: color-mix(in srgb, var(--gold) 12%, var(--card));
+  --blue-bg: color-mix(in srgb, var(--blue) 10%, var(--card));
+  --green-edge: color-mix(in srgb, var(--green) 42%, var(--border));
+  --red-edge: color-mix(in srgb, var(--red) 42%, var(--border));
+  --gold-edge: color-mix(in srgb, var(--gold) 42%, var(--border));
+  --bench-accent-edge: color-mix(in srgb, var(--primary) 48%, var(--border));
+}
+
+html[data-workbench-theme]:not([data-workbench-theme="mint"]) .trading-chart {
+  --chart-paper: var(--bench-canvas);
+  --chart-ink: var(--foreground);
+  --chart-muted: var(--muted-foreground);
+  --chart-grid: var(--bench-grid);
+  --chart-line: var(--border);
+  --chart-long: var(--green-bar);
+  --chart-short: var(--red-bar);
+  --chart-target: var(--green);
+  --chart-stop: var(--red);
+  --chart-up-tint: var(--green-bg);
+  --chart-down-tint: var(--red-bg);
+  --chart-pen: var(--blue);
+  --chart-segment: var(--gold);
+  --chart-pen-tint: var(--blue-bg);
+  --chart-segment-tint: var(--gold-bg);
+  --chart-support: var(--bench-support);
+  --chart-vwap: var(--bench-vwap);
+  --chart-macd-fast: var(--gold);
+  --chart-macd-slow: var(--blue);
+  --chart-cross-line: var(--secondary);
+  --chart-cross-bg: var(--bench-cross-bg);
+  --chart-inverse-ink: white;
+  --chart-up-badge: var(--bench-up-badge);
+  --chart-down-badge: var(--bench-down-badge);
+}
+
+html[data-workbench-theme]:not([data-workbench-theme="mint"]) .trading-workspace {
+  background-image: var(--bench-backdrop);
+
+  & .sidebar { background: var(--bench-sidebar); }
+  & .panel { border-radius: var(--bench-corner); box-shadow: var(--bench-shadow); }
+  &.chart-focus-layout .chart-panel { border-radius: 0; }
+  & .brand-mark, & .top-refresh, & .market-menu button.active, & .watch-row.selected { border-color: var(--bench-accent-edge); }
+  & .market-menu button.active, & .market-menu button.active :is(.market-icon,small), & .watch-row.selected small,
+  & .official-links :is(svg,.official-x), & .official-links a:hover,
+  & .card-top > span:first-child svg, & .replay-toolbar .return-live { color: var(--primary); }
+  & .official-links a:hover { background: var(--selected); }
+  & .market-menu .active-marker, & .sidebar-tabs button.active::after, & .outlook-tabs button.active::after { background: var(--primary); }
+  & .layer-toolbar button.active[aria-pressed="true"], & .watch-monitor-toggle.active {
+    background: var(--bench-button); border-color: var(--bench-button); color: var(--bench-button-ink);
+  }
+  & .layer-toolbar button.active[aria-pressed="true"]:hover { filter: brightness(1.09); }
+  & input[type="range"] { accent-color: var(--primary); }
+  & .trading-chart .chart-bottom, & .chart-history-nav { background: var(--muted); }
+  & .trading-zoom button:hover, & .trading-levels-head button:hover { background: var(--muted); }
+  & .trading-chart .chart-loading { background: color-mix(in srgb, var(--chart-paper) 88%, transparent); }
+  & .factor-track, & .sample-bar, & .sample-bar i.no-samples { background: var(--border); }
+  & .sample-bar :is(span,i):nth-child(2) { background: var(--outline); }
+  & .linked-grid-line { stroke: var(--bench-grid); }
+  & .linked-cross { stroke: var(--secondary); }
+  & .plan-confluence { background: var(--card); }
+  & ::selection { color: var(--foreground); background: var(--selected); }
+  & ::-webkit-scrollbar-thumb { background: var(--outline); }
+}
+
+@media (max-width: 700px) {
+  html[data-workbench-theme]:not([data-workbench-theme="mint"]) .trading-workspace .chart-panel { border-radius: 0; }
+}
