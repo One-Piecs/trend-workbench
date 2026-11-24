@@ -1,8 +1,8 @@
 import type { AnalysisInput, Confluence } from './confluence-types';
 
-export type Market = 'crypto' | 'us' | 'cn';
+export type Market = 'crypto' | 'us' | 'cn' | 'commodity';
 export type Interval = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w' | '1M';
-export interface Instrument { id: string; symbol: string; name: string; market: Market; exchange: string; currency: string }
+export interface Instrument { id: string; symbol: string; name: string; market: Market; exchange: string; currency: string; contract?: string }
 export interface Candle { time: number; open: number; high: number; low: number; close: number; volume: number; closed?: boolean }
 export interface MarketData { instrument: Instrument; interval: Interval; candles: Candle[]; source: string; asOf: string; delayNotice: string; adjustment: string; warnings: string[]; availableIntervals: Interval[]; history?: {requested:number;received:number;closed:number;firstTime:number|null;lastTime:number|null;status:'target-met'|'limited'|'insufficient'} }
 export interface Point { index: number; time: number; price: number }

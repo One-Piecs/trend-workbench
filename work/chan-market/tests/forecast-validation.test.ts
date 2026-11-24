@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { syntheticDaily } from './synthetic-daily.ts';
+import {syntheticDaily} from './synthetic-daily.ts';
 import {analyze} from '../lib/chan.ts';
 import {buildForecast} from '../lib/forecast.ts';
 import {advanceForecastJournal,emptyJournal,recordForecast} from '../lib/forecast-journal.ts';
 import {candleAvailableAt} from '../lib/timeframe-context.ts';
+import {createMinuteExitResolver} from '../lib/forecast-validation-minutes.ts';
 import {enforceSinglePosition,freezeValidationForecast,simulateFrozenForecast,summarizeForecastValidation,validateForecast,validationClosedBars,type FrozenForecastObservation,type ForecastValidationOutcome} from '../lib/forecast-validation.ts';
 import type {Candle,MarketData} from '../lib/market-types';
 import type {ReadyForecastSide} from '../lib/forecast-types';
@@ -32,10 +33,81 @@ test('an adverse overnight gap exits at the worse opening, not the stale stop pr
   const out=simulateFrozenForecast(observation(),data(rows),{feeBps:0,slippageBps:0});
   assert.equal(out.exitReason,'gap-stop');assert.equal(out.exitPrice,80);assert.equal(out.netR,(80-101)/11);
 });
-test('same-bar post-entry stop and target is counted as stop-first',()=>{
+test('post-entry stop and target on a coarse bar without minute evidence has no realized result',()=>{
   const rows=normal();rows[2]=bar(2,101,125,85,110);
   const out=simulateFrozenForecast(observation(),data(rows),{feeBps:0,slippageBps:0});
-  assert.equal(out.exitReason,'ambiguous-stop-first');assert.equal(out.exitPrice,90);assert.equal(out.netR,-1);
+  assert.equal(out.status,'ambiguous-exit');assert.equal(out.intrabarResolution,'missing-minutes');
+  assert.equal(out.exitIndex,2);assert.equal(out.exitAt,rows[2].time+3600);assert.equal(out.exitPrice,undefined);assert.equal(out.netR,undefined);
+  const stats=summarizeForecastValidation([out]);
+  assert.equal(stats.ambiguousExits,1);assert.equal(stats.completed,0);assert.equal(stats.meanNetR,null);
+});
+const minuteFixture=(buy=true)=>{
+  const p=side(buy),stop=p.invalidationPrice,target=p.targets[1].price;
+  const rows=buy?normal():[bar(0,103,104,102,103),bar(1,103,104,100,101),bar(2,101,105,100,101)];
+  const parent=rows[2]=bar(2,101,Math.max(stop,target)+1,Math.min(stop,target)-1,101);
+  const primary=data(rows);
+  const minutes:MarketData={...primary,interval:'1m',candles:Array.from({length:60},(_,i)=>({...parent,time:parent.time+i*60,high:102,low:100}))};
+  return {primary,minutes,parent};
+};
+test('both long and short dual touches follow the first evidenced minute and charge the ordinary exit costs',()=>{
+  for(const buy of [true,false])for(const firstTarget of [true,false]) {
+    const {primary,minutes,parent}=minuteFixture(buy);
+    minutes.candles[buy===firstTarget?3:14].high=parent.high;
+    minutes.candles[buy===firstTarget?14:3].low=parent.low;
+    const o=simulateFrozenForecast(observation(buy),primary,{feeBps:1,slippageBps:2},2,minutes);
+    assert.equal(o.status,'closed');assert.equal(o.intrabarResolution,'minute');assert.equal(o.exitAt,parent.time+4*60);
+    assert.equal(o.exitReason,firstTarget?'target2':'stop');
+    const raw=firstTarget?side(buy).targets[1].price:side(buy).invalidationPrice;
+    assert.equal(o.exitPrice,raw*(1-(buy?1:-1)*.0002));
+    assert.equal(summarizeForecastValidation([o]).minuteResolved,1);
+  }
+});
+test('dual touch inside the same minute with an opening inside remains unknowable',()=>{
+  const {primary,minutes,parent}=minuteFixture();
+  Object.assign(minutes.candles[5],{high:parent.high,low:parent.low});
+  const o=simulateFrozenForecast(observation(),primary,undefined,2,minutes);
+  assert.equal(o.status,'ambiguous-exit');assert.equal(o.intrabarResolution,'same-minute');assert.equal(o.netReturnPct,undefined);
+});
+test('missing, duplicate, unclosed, stale capture, incompatible venue/currency/adjustment, or inconsistent aggregate cannot resolve a conflict',()=>{
+  const {primary,minutes,parent}=minuteFixture();
+  minutes.candles[1].high=parent.high;minutes.candles[5].low=parent.low;
+  for(const [history,why] of [
+    [{...minutes,candles:minutes.candles.slice(0,-1)},'incomplete-minutes'],
+    [{...minutes,candles:[...minutes.candles,minutes.candles[0]]},'incomplete-minutes'],
+    [{...minutes,candles:minutes.candles.map((b,i)=>i===15?{...b,closed:false}:b)},'incomplete-minutes'],
+    [{...minutes,asOf:new Date((parent.time+3599)*1000).toISOString()},'incomplete-minutes'],
+    [{...minutes,instrument:{...minutes.instrument,currency:'USD'}},'incompatible-source'],
+    [{...minutes,instrument:{...minutes.instrument,exchange:'other'}},'incompatible-source'],
+    [{...minutes,source:'other'},'incompatible-source'],[{...minutes,adjustment:'unknown'},'incompatible-source'],
+    [{...minutes,interval:'5m'},'incompatible-source'],
+    [{...minutes,candles:minutes.candles.map((b,i)=>i===59?{...b,close:102}:b)},'inconsistent-ohlc'],
+  ] as const){
+    const o=simulateFrozenForecast(observation(),primary,undefined,2,history as MarketData);
+    assert.equal(o.status,'ambiguous-exit');assert.equal(o.intrabarResolution,why);assert.equal(o.exitPrice,undefined);
+  }
+  const outside={...parent,time:parent.time+3600,high:1e8,low:.1};
+  const original=simulateFrozenForecast(observation(),primary,undefined,2,minutes);
+  assert.deepEqual(original,simulateFrozenForecast(observation(),primary,undefined,2,{...minutes,candles:[...minutes.candles,outside]}));
+});
+test('the opening determines order on a dual-touch parent or minute that gaps beyond a frozen level',()=>{
+  const {primary,minutes,parent}=minuteFixture();
+  Object.assign(minutes.candles[8],{open:parent.low,high:parent.high,low:parent.low});
+  let o=simulateFrozenForecast(observation(),primary,{feeBps:0,slippageBps:0},2,minutes);
+  assert.equal(o.exitReason,'gap-stop');assert.equal(o.exitPrice,parent.low);
+  primary.candles[2]=bar(2,101,105,100,103);primary.candles[3]=bar(3,121,125,85,100);
+  o=simulateFrozenForecast(observation(),primary,{feeBps:0,slippageBps:0});
+  assert.equal(o.exitReason,'target2');assert.equal(o.exitPrice,120);
+});
+test('end-labelled A-share minute evidence skips lunch on a full trading day and excludes delayed, incomplete data',()=>{
+  const {primary,parent}=minuteFixture(),t=Date.UTC(2025,0,2,1,30)/1000;
+  primary.instrument={...primary.instrument,market:'cn',id:'cn:600519.SH',symbol:'600519.SH',exchange:'上交所',currency:'CNY'};
+  primary.source='东方财富';primary.interval='4h';primary.asOf=new Date((t+6*3600)*1000).toISOString();
+  parent.time=t;const bars=Array.from({length:240},(_,i)=>({...parent,time:t+((i<120?i:i+90)+1)*60,high:102,low:100}));
+  bars[125].high=parent.high;bars[145].low=parent.low;
+  const minutes:MarketData={...primary,interval:'1m',candles:bars};
+  assert.deepEqual(createMinuteExitResolver(primary,minutes)(parent,true,90,120),{resolution:'minute',reason:'target2',price:120,availableAt:bars[125].time+120});
+  assert.equal(createMinuteExitResolver(primary,{...minutes,candles:bars.slice(0,-1)})(parent,true,90,120).resolution,'incomplete-minutes');
+  assert.equal(createMinuteExitResolver({...primary,interval:'1w'},minutes)(parent,true,90,120).resolution,'unsupported-period');
 });
 test('confirmation plus a target/stop in the same bar is ambiguous before any entry',()=>{
   for(const row of [bar(1,99,111,98,101),bar(1,99,103,89,101)]) {

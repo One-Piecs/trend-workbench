@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {getCandles} from '../lib/market-data.ts';
+import {equitySessionOn} from '../lib/equity-calendar.ts';
 
 const dates:string[]=[];
-for(let stamp=Date.parse('2026-11-13T00:00:00Z');dates.length<260;stamp-=86400000){const d=new Date(stamp);if(d.getUTCDay()>0&&d.getUTCDay()<6)dates.unshift(d.toISOString().slice(0,10));}
+for(let stamp=Date.parse('2026-11-13T00:00:00Z');dates.length<260;stamp-=86400000){
+  const date=new Date(stamp).toISOString().slice(0,10);
+  if(equitySessionOn('cn',date).status==='open')dates.unshift(date);
+}
 const stamps={30:['10:00','10:30','11:00','11:30','13:30','14:00','14:30','15:00'],60:['10:30','11:30','14:00','15:00']} as const;
 function rows(scale:30|60,count:number){return dates.flatMap(date=>stamps[scale].map(clock=>({day:`${date} ${clock}:00`,open:'100',close:'101',high:'102',low:'99',volume:'100'}))).slice(-count);}
 

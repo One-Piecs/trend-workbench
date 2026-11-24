@@ -1,6 +1,7 @@
 """Assemble the arm64 workbench, sign the bundle and write a Finder-compatible ZIP."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -29,7 +30,6 @@ INSTRUCTIONS = """趋势判断工作台 · macOS 版
 Mac 首次打开
 这个版本采用临时签名，尚未经 Apple 公证。如系统提示无法验证开发者，请先确认应用来自本项目的 GitHub 发行页。
 尝试打开一次后，到「系统设置」→「隐私与安全性」，在「趋势判断工作台」的提示旁点「仍要打开」，按系统提示确认。
-开发者已在 Mac mini M4 上实测打开 v1.3.0。
 GitHub 发行页  https://github.com/nhovongoc0-max/trend-workbench/releases
 Apple 关于首次打开的说明
 https://support.apple.com/zh-cn/102445
@@ -109,12 +109,13 @@ def main():
         for package in ("react", "react-dom", "scheduler", "lucide-react", "tailwindcss"):
             shutil.copyfile(WORK / "chan-market/node_modules" / package / "LICENSE", licenses / (package + ".txt"))
         shutil.copyfile(HERE.parent / "assets/Workbench.icns", resources / "Workbench.icns")
+        version = json.loads((resources / "build-info.json").read_text(encoding="utf-8"))["version"]
         metadata = {
             "CFBundleDevelopmentRegion": "zh_CN", "CFBundleLocalizations": ["zh_CN", "en"],
             "CFBundleExecutable": LAUNCHER, "CFBundleName": NAME, "CFBundleDisplayName": NAME,
             "CFBundleIdentifier": "app.trendworkbench.desktop", "CFBundleIconFile": "Workbench.icns",
             "CFBundleInfoDictionaryVersion": "6.0", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.3.1", "CFBundleVersion": "1.3.1",
+            "CFBundleShortVersionString": version, "CFBundleVersion": version,
             "LSMinimumSystemVersion": "15.0", "LSApplicationCategoryType": "public.app-category.finance",
             "NSHighResolutionCapable": True, "NSPrincipalClass": "NSApplication",
             "NSAppTransportSecurity": {"NSExceptionDomains": {"127.0.0.1": {"NSExceptionAllowsInsecureHTTPLoads": True}}},

@@ -1,92 +1,90 @@
 import type { Candle } from './market-types';
+import { equityExchangeClock, equityFourHourWindows, equitySessionOn, type SessionWindow } from './equity-calendar.ts';
 
 export interface EquityFourHourOptions {
-  market: 'cn' | 'us';
-  sourceInterval: '30m' | '1h';
-  timestamp: 'start' | 'end';
-  now?: number;
+  market:'cn'|'us';
+  sourceInterval:'30m'|'1h';
+  timestamp:'start'|'end';
+  now?:number;
 }
 export interface EquityFourHourResult {
-  candles: Candle[];
-  discardedBuckets: number;
-  excludedRows: number;
+  candles:Candle[];
+  discardedBuckets:number;
+  excludedRows:number;
+  missingSessions:number;
 }
 
-const clocks = {
-  cn: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', weekday: 'short' }),
-  us: new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', weekday: 'short' }),
-};
-function local(time: number, market: 'cn' | 'us') {
-  const parts = Object.fromEntries(clocks[market].formatToParts(new Date(time * 1000)).map(p => [p.type, p.value]));
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, minute: Number(parts.hour) * 60 + Number(parts.minute), second: Number(parts.second), weekday: parts.weekday };
-}
-
-/** Build exchange-session candles, never groups of arbitrary consecutive rows.
- * Missing historical slots are omitted, not filled or declared closed. The US
- * regular-session tail is 2.5 hours and remains a distinct candle. */
-export function aggregateEquityFourHour(rows: Candle[], options: EquityFourHourOptions): EquityFourHourResult {
-  const { market, sourceInterval, timestamp } = options;
-  const now = options.now ?? Date.now() / 1000;
-  const current = local(now, market);
-  const step = sourceInterval === '1h' ? 60 : 30;
-  const windows = market === 'cn' ? [{ start: 570, end: 900 }] : [{ start: 570, end: 810 }, { start: 810, end: 960 }];
-  const slots = windows.map(window => {
-    const result: { start: number; end: number }[] = [];
-    for (let start = window.start; start < window.end; start += step) {
-      if (market === 'cn' && start === 690) start = 780;
-      result.push({ start, end: Math.min(start + step, window.end, market === 'cn' && start < 690 ? 690 : Infinity) });
+interface Bucket extends SessionWindow { slots:SessionWindow[]; rows:Map<number,Candle> }
+function scheduledBuckets(market:'cn'|'us',date:string,step:number):Bucket[] {
+  const session=equitySessionOn(market,date);
+  return equityFourHourWindows(market,date).map(window=>{
+    const slots:SessionWindow[]=[];
+    for(const segment of session.segments){
+      const limit=Math.min(segment.end,window.end);
+      for(let start=Math.max(segment.start,window.start);start<limit;start+=step){
+        slots.push({start,end:Math.min(start+step,limit)});
+      }
     }
-    return result;
+    return {...window,slots,rows:new Map()};
   });
-  const days = new Map<string, { midnight: number; buckets: Map<number, Candle>[] }>();
-  let excludedRows = 0, discardedBuckets = 0;
-  // Last occurrence wins, consistent with the provider adapter's deduplication.
-  const unique = [...new Map(rows.map(row => [row.time, row])).values()].sort((a, b) => a.time - b.time);
-  for (const row of unique) {
-    if (![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) || row.time <= 0 || row.low <= 0 || row.volume < 0 || row.high < Math.max(row.open, row.close) || row.low > Math.min(row.open, row.close)) { excludedRows++; continue; }
-    const clock = local(row.time, market);
-    if (clock.second !== 0 || row.time % 60 !== 0 || ['Sat', 'Sun'].includes(clock.weekday) || clock.date > current.date) { excludedRows++; continue; }
-    let bucket = -1, index = -1;
-    for (let i = 0; i < slots.length; i++) {
-      const candidate = slots[i].findIndex(slot => slot[timestamp] === clock.minute);
-      if (candidate >= 0) { bucket = i; index = candidate; break; }
+}
+
+/** Cover the published regular session, including interrupted trading hours and
+ * announced early closes. A scheduled session alone never supplies any price. */
+export function aggregateEquityFourHour(input:Candle[],options:EquityFourHourOptions):EquityFourHourResult {
+  const {market,sourceInterval,timestamp}=options;
+  const now=options.now??Date.now()/1000;
+  const step=sourceInterval==='1h'?60:30;
+  const delay=market==='us'?900:120;
+  const unique=[...new Map(input.map(row=>[row.time,row])).values()].sort((a,b)=>a.time-b.time);
+  const sessions=new Map<string,{midnight:number;buckets:Bucket[]}>();
+  let discardedBuckets=0,excludedRows=0,missingSessions=0;
+  for(const row of unique){
+    if(![row.time,row.open,row.high,row.low,row.close,row.volume].every(Number.isFinite)||row.time<=0||row.time%60!==0||
+      row.low<=0||row.volume<0||row.high<Math.max(row.open,row.close)||row.low>Math.min(row.open,row.close)){
+      excludedRows++;continue;
     }
-    // This also rejects Yahoo's appended instantaneous quote and extended hours.
-    if (bucket < 0) { excludedRows++; continue; }
-    if (row.time + (slots[bucket][index].start - clock.minute) * 60 > now) { excludedRows++; continue; }
-    let day = days.get(clock.date);
-    if (!day) {
-      // Derive midnight from an observed local timestamp, preserving NY DST.
-      day = { midnight: row.time - clock.minute * 60, buckets: windows.map(() => new Map()) };
-      days.set(clock.date, day);
-    }
-    day.buckets[bucket].set(index, row);
+    const clock=equityExchangeClock(market,row.time);
+    const session=sessions.get(clock.date)??{midnight:row.time-clock.minute*60,buckets:scheduledBuckets(market,clock.date,step)};
+    const bucket=session.buckets.find(b=>b.slots.some(s=>s[timestamp]===clock.minute));
+    const index=bucket?.slots.findIndex(slot=>slot[timestamp]===clock.minute);
+    if(!bucket||index===undefined||session.midnight+bucket.slots[index].start*60>now){excludedRows++;continue;}
+    bucket.rows.set(index,row);
+    sessions.set(clock.date,session);
   }
-  const candles: Candle[] = [];
-  for (const [date, day] of days) {
-    for (let bucket = 0; bucket < windows.length; bucket++) {
-      const source = day.buckets[bucket];
-      if (!source.size) continue;
-      const parts = [...source.entries()].sort(([a], [b]) => a - b);
-      const prefix = parts.every(([index], i) => index === i);
-      const complete = prefix && parts.length === slots[bucket].length;
-      // On a US half-day the 12:30 hourly bar may end at 13:00. A later
-      // afternoon bar is required to prove that it actually covered to 13:30.
-      const hourlyFirstProven = market !== 'us' || sourceInterval !== '1h' || bucket !== 0 || day.buckets[1].size > 0;
-      if (!prefix || ((!complete || !hourlyFirstProven) && date !== current.date)) { discardedBuckets++; continue; }
-      const values = parts.map(([, row]) => row);
-      const end = day.midnight + windows[bucket].end * 60;
-      const closed = complete && hourlyFirstProven && values.every(row => row.closed === true) && now >= end + (market === 'us' ? 900 : 120);
+  const candles:Candle[]=[];
+  const dates=[...sessions.keys()];
+  const first=dates[0],last=dates.at(-1);
+  for(const [date,{midnight,buckets}] of sessions){
+    for(const bucket of buckets){
+      const end=midnight+bucket.end*60;
+      const parts=[...bucket.rows.entries()];
+      if(!parts.length){
+        // No observations beyond the provider's retained range prove coverage
+        // there. Only count empty slots between observed source timestamps.
+        if((date!==first||buckets.some(b=>b.end<=bucket.start&&b.rows.size))&&
+          (date!==last||buckets.some(b=>b.start>=bucket.end&&b.rows.size)))discardedBuckets++;
+        continue;
+      }
+      const complete=parts.length===bucket.slots.length;
+      if(!parts.every(([index],i)=>index===i)||(!complete&&now>=end+delay)){discardedBuckets++;continue;}
+      const values=parts.map(([,row])=>row);
       candles.push({
-        time: day.midnight + windows[bucket].start * 60,
-        open: values[0].open,
-        high: Math.max(...values.map(row => row.high)),
-        low: Math.min(...values.map(row => row.low)),
-        close: values[values.length - 1].close,
-        volume: values.reduce((sum, row) => sum + row.volume, 0),
-        closed,
+        time:midnight+bucket.start*60,open:values[0].open,high:Math.max(...values.map(c=>c.high)),
+        low:Math.min(...values.map(c=>c.low)),close:values.at(-1)!.close,
+        volume:values.reduce((sum,c)=>sum+c.volume,0),
+        closed:complete&&now>=end+delay&&values.every(c=>c.closed===true),
       });
     }
   }
-  return { candles, discardedBuckets, excludedRows };
+  if(first&&last){
+    const dayMs=86400000,end=Date.parse(last);
+    for(let day=Date.parse(first)+dayMs;day<end;day+=dayMs){
+      const date=new Date(day).toISOString().slice(0,10);
+      if(sessions.has(date))continue;
+      const count=equityFourHourWindows(market,date).length;
+      if(count){missingSessions++;discardedBuckets+=count;}
+    }
+  }
+  return {candles,discardedBuckets,excludedRows,missingSessions};
 }

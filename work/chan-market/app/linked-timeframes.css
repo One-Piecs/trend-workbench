@@ -1,0 +1,29 @@
+.linked-timeframes { border-block: 1px solid var(--border); background: var(--muted); }
+.linked-toggle { width: 100%; display: flex; align-items: center; gap: 9px; padding: 10px 18px; text-align: start; font-weight: 600; }
+.linked-toggle small { color: var(--muted-foreground); font-size: .85em; font-weight: 400; }
+.linked-toggle svg:last-child { margin-inline-start: auto; }
+.linked-toggle[aria-expanded=true] svg:last-child { transform: rotate(180deg); }
+.linked-toggle:hover { background: var(--muted); }
+.linked-content { padding: 0 14px 14px; container-type: inline-size; }
+.linked-time { min-height: 35px; display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; font-size: 14px; color: var(--secondary); }
+.linked-time button, .linked-message button { color: var(--green); text-decoration: underline; }
+.linked-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.linked-pane { min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.linked-pane header { padding: 7px 10px; display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 4px; }
+.linked-pane header small, .linked-content>small { font-size: 13px; color: var(--secondary); }
+.linked-content>small { display: block; margin-top: 7px; }
+.linked-plot { display: block; width: 100%; height: 106px; cursor: crosshair; touch-action: pan-y; }
+.linked-plot:focus-visible { outline: 1px solid var(--green); outline-offset: -2px; }
+.linked-grid-line { stroke: #dce5e9; stroke-dasharray: 2 4; }
+.linked-up { color: var(--green); }
+.linked-down { color: var(--red); }
+.linked-cross { stroke: #536875; stroke-width: 1; stroke-dasharray: 3 2; pointer-events: none; }
+.linked-quote { padding: 6px 9px 9px; display: flex; align-items: baseline; gap: 2px 8px; flex-wrap: wrap; font-size: 13px; }
+.linked-quote strong { font-family: var(--mono); font-size: 17px; }
+.linked-quote span, .linked-quote small { color: var(--secondary); }
+.linked-quote small { width: 100%; font-size: 13px; }
+.linked-message { margin: 0; padding: 12px; color: var(--secondary); font-size: 14px; }
+@container (max-width: 580px) {
+  .linked-grid { grid-template-columns: minmax(0,1fr); }
+  .linked-plot { height: 85px; }
+}

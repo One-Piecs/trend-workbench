@@ -1,6 +1,9 @@
 import type { Candle, Interval, MarketData } from './market-types';
 import { aggregateEquityFourHour } from './equity-four-hour.ts';
 import { candleAvailableAt, exchangeClock, higherInterval } from './timeframe-context.ts';
+import { equityFourHourWindows, equitySessionOn } from './equity-calendar.ts';
+import {commodityBarEnd,commodityPeriodStart,commoditySessionStart,commodityTradeDate,consecutiveCommodityBars} from './commodity-session.ts';
+import {positiveRunStart} from './commodity-analysis.ts';
 
 export const SAME_SOURCE_AGGREGATION = ' · 真实同源聚合';
 const DAY = 86400;
@@ -46,6 +49,29 @@ function monday(day: number): number {
 }
 type Aggregation = { candles:Candle[]; skipped:number };
 
+function commodity(primary:MarketData,target:Interval,asOf:number):Aggregation|null {
+  const span=duration[target],child=duration[primary.interval];
+  if(!span||!child||span<=child)return null;
+  const groups=new Map<number,Candle[]>();
+  for(const bar of primary.candles){
+    const session=commoditySessionStart(bar.time);
+    if(session===null)continue;
+    const start=target==='1w'?commodityPeriodStart(commodityTradeDate(bar.time),'1w')
+      :session+Math.floor((bar.time-session)/span)*span;
+    const group=groups.get(start);
+    if(group)group.push(bar);else groups.set(start,[bar]);
+  }
+  const candles:Candle[]=[];let skipped=0;
+  for(const [start,rows] of groups){
+    const complete=rows[0].time===start
+      &&rows.every((row,i)=>row.closed===true&&(i===0||consecutiveCommodityBars(rows[i-1].time,row.time,primary.interval)))
+      &&commodityBarEnd(rows.at(-1)!.time,primary.interval)===commodityBarEnd(start,target)
+      &&candleAvailableAt({time:start},'commodity',target)<=asOf;
+    if(complete)candles.push(merge(rows,start));else skipped++;
+  }
+  return {candles,skipped};
+}
+
 function crypto(primary:MarketData, target:Interval, asOf:number):Aggregation|null {
   const child=duration[primary.interval], parent=duration[target];
   if (!child || !parent || parent <= child || parent % child !== 0) return null;
@@ -62,11 +88,10 @@ function crypto(primary:MarketData, target:Interval, asOf:number):Aggregation|nu
   return {candles,skipped};
 }
 
-/** Every required weekday/slot must be present. Holidays, early closes and
- * unknown timestamp conventions are not guessed or filled with synthetic rows. */
+/** Only verified trading dates/slots are required. No missing bar is inferred. */
 function equities(primary:MarketData, target:Interval, asOf:number):Aggregation|null {
   const market=primary.instrument.market;
-  if(market==='crypto')return null;
+  if(market!=='us'&&market!=='cn')return null;
   const source=primary.source;
   const endLabelled=market==='cn' && /^(?:东方财富|腾讯证券|新浪财经)/.test(source)
     || market==='us' && /^东方财富/.test(source);
@@ -84,7 +109,7 @@ function equities(primary:MarketData, target:Interval, asOf:number):Aggregation|
   for(const c of primary.candles) {
     const clock=exchangeClock(c.time,market), day=Date.parse(`${clock.date}T00:00:00Z`)/1000;
     const weekday=new Date(day*1000).getUTCDay();
-    if(weekday===0||weekday===6||c.time%60!==0) { skipped++;continue; }
+    if(equitySessionOn(market,clock.date).status!=='open'||c.time%60!==0) { skipped++;continue; }
     const key=weekly?monday(day):day;
     // Convert observed exchange clock to local midnight without using the
     // current UTC offset; this also preserves historical New York DST.
@@ -97,9 +122,17 @@ function equities(primary:MarketData, target:Interval, asOf:number):Aggregation|
     groups.set(key,group);
   }
   const candles:Candle[]=[];
-  const expected=weekly?[1,2,3,4,5]:market==='cn'?[630,690,840,900]:[570,810];
-  for(const group of groups.values()) {
+  for(const [key,group] of groups) {
     const {rows,slots}=group;
+    const date=new Date(key*1000).toISOString().slice(0,10);
+    let expected:number[];
+    if(weekly){
+      const week=Array.from({length:5},(_,i)=>equitySessionOn(market,new Date((key+i*DAY)*1000).toISOString().slice(0,10)));
+      if(week.some(d=>d.status==='unknown')){skipped++;continue;}
+      expected=week.flatMap((d,i)=>d.status==='open'?[i+1]:[]);
+    }else{
+      expected=market==='cn'?[630,690,840,900]:equityFourHourWindows(market,date).map(w=>w.start);
+    }
     const candle=merge(rows,group.time);
     if(rows.length!==expected.length||slots.length!==expected.length||slots.some((s,i)=>s!==expected[i])||rows.some(c=>c.closed!==true)||candleAvailableAt(candle,market,target,source)>asOf) { skipped++;continue; }
     candles.push(candle);
@@ -113,8 +146,11 @@ export function deriveHigherFromPrimary(primary:MarketData):MarketData|null {
   const target=higherInterval(primary.instrument.market,primary.interval);
   const asOf=Date.parse(primary.asOf)/1000;
   if(!target||target==='1M'||!Number.isFinite(asOf)||!compatibleMarketFeeds(primary,primary))return null;
+  const start=positiveRunStart(primary.candles,primary.instrument.market,bar=>bar.closed===true&&candleAvailableAt(bar,'commodity',primary.interval)<=asOf);
+  if(start)primary={...primary,candles:primary.candles.slice(start)};
   if(!primary.candles.length||primary.candles.some((c,i)=>!valid(c)||i>0&&c.time<=primary.candles[i-1].time))return null;
-  const result=primary.instrument.market==='crypto'?crypto(primary,target,asOf):equities(primary,target,asOf);
+  const result=primary.instrument.market==='crypto'?crypto(primary,target,asOf)
+    :primary.instrument.market==='commodity'?commodity(primary,target,asOf):equities(primary,target,asOf);
   if(!result||result.candles.length<35)return null;
   return {
     ...primary,interval:target,candles:result.candles,source:primary.source+SAME_SOURCE_AGGREGATION,

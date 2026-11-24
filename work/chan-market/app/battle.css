@@ -1,0 +1,141 @@
+.trading-workspace .trading-quote:has(> .battle-open) {
+  grid-template-columns: auto minmax(max-content, .85fr) minmax(max-content, 1.15fr) auto;
+}
+.battle-open {
+  justify-self: start; display: inline-flex; align-items: center; gap: 8px;
+  min-height: 34px; padding: 5px 12px; white-space: nowrap; border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: linear-gradient(108deg, var(--selected), var(--card) 74%);
+  color: var(--primary); font-size: 14px; font-weight: 650; cursor: pointer;
+}
+.battle-open:hover { border-color: var(--primary); background: var(--selected); }
+.battle-open:focus-visible, .market-battle button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.market-battle {
+  position: fixed; inset: 0; margin: auto; width: min(760px, calc(100vw - 32px)); max-width: none;
+  max-height: min(88vh, 940px); max-height: min(88dvh, 940px); overscroll-behavior: contain; overflow: auto;
+  padding: 0; border: 1px solid var(--border); border-radius: 16px; background: var(--card);
+  color: var(--foreground); text-align: start; font-variant-numeric: tabular-nums;
+  box-shadow: 0 24px 90px rgba(11,28,42,.27);
+}
+.market-battle:not([open]) { display: none; }
+.market-battle:has([data-battle-arena]) { width: min(1080px, calc(100vw - 24px)); }
+.market-battle { --battle-green: #08764f; }
+[data-workbench-theme="amethyst"] .market-battle,[data-workbench-theme="tradingview"] .market-battle { --battle-green: #80dfab; }
+.market-battle::backdrop { background-color: rgba(11,24,34,.49); }
+.battle-head {
+  display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 12px; align-items: center; position: sticky; top: 0; z-index: 1;
+  padding: 16px 22px; background: var(--card); border-bottom: 1px solid var(--border);
+}
+.battle-head h2 { margin: 0; display: flex; align-items: center; gap: 9px; font-size: 22px; line-height: 1.35; font-weight: 720; }
+.battle-head h2 svg { color: var(--primary); }
+.battle-head p { display: flex; align-items: center; gap: 8px; color: var(--secondary); margin: 3px 0 0; font-size: 13px; }
+.battle-head p i { width: 3px; height: 3px; border-radius: 50%; background: var(--outline); }
+.battle-head > div:first-child { min-width: 0; }
+.battle-head p { flex-wrap: wrap; overflow-wrap: anywhere; }
+.battle-head .battle-close { justify-self: end; }
+.battle-price { display: grid; justify-items: center; gap: 2px; }
+.battle-price > span,.battle-price small { color: var(--secondary); font-size: 12px; font-weight: 500; }
+.battle-price strong { font-size: clamp(21px,2.2vw,30px); font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.battle-price small { margin-inline-start: 5px; font-size: 11px; }
+.battle-close, .battle-updates button {
+  display: inline-grid; place-items: center; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--secondary); background: var(--card); cursor: pointer; width: 32px; height: 32px;
+}
+.battle-updates button { width: 28px; height: 28px; }
+.battle-updates .battle-audio-control { display: inline-flex; align-items: center; gap: 5px; width: auto; padding: 0 8px; font-size: 12px; }
+.battle-audio-control[aria-pressed="true"] { color: var(--primary); background: var(--selected); }
+.battle-volume { display: inline-flex; align-items: center; gap: 5px; color: var(--secondary); font-size: 12px; }
+.battle-volume input { width: clamp(60px,9vw,94px); accent-color: var(--primary); cursor: pointer; }
+.battle-volume span { min-width: 4ch; text-align: end; }
+.battle-transport { display: inline-flex; align-items: center; gap: 5px; color: var(--secondary); font-size: 12px; }
+.battle-transport::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.battle-transport[data-battle-transport="live"] { color: var(--green); }
+.battle-updates button:disabled { cursor: default; opacity: .55; }
+.battle-close:hover, .battle-updates button:hover:enabled { background: var(--selected); color: var(--primary); }
+.battle-body { display: grid; gap: 14px; padding: 18px 22px 22px; }
+.battle-arena,.battle-book,.battle-structure { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 15px 17px; }
+.battle-arena {
+  background: linear-gradient(113deg,color-mix(in srgb,var(--battle-green) 6%,var(--card)),var(--card) 49%,color-mix(in srgb,var(--red) 6%,var(--card)));
+}
+.battle-arena .battle-buy,.battle-book .battle-buy { color: var(--battle-green); }
+.battle-arena .battle-frontline i,.battle-arena .battle-bars i { background-color: var(--battle-green); }
+.army-impact,.army-charge { position: absolute; pointer-events: none; font-family: var(--font-sans,system-ui,sans-serif); }
+.army-impact { --team: #abf9c6; transform: translate(-50%,calc(-100% - 13px)); white-space: nowrap; padding: 3px 6px;
+  background: #102222ed; border-bottom: 2px solid var(--team); border-radius: 3px; color: #fff8df;
+  font-size: clamp(12px,1.5vw,15px); line-height: 1.2; font-weight: 750; box-shadow: 0 1px 4px #08141a9c;
+  animation: army-impact-value 1.55s ease-out both; }
+.army-impact[data-side="sell"] { --team: #ffa69d; }
+.army-impact small { color: var(--team); font-size: .72em; }
+@keyframes army-impact-value { from { opacity: 1; transform: translate(-50%,calc(-100% - 9px)) scale(.93); }
+  14% { transform: translate(-50%,calc(-100% - 16px)) scale(1.03); }
+  82% { opacity: 1; } to { opacity: 0; transform: translate(-50%,calc(-100% - 25px)); } }
+.army-charge { left: 50%; top: 10%; transform: translateX(-50%); display: grid; gap: 2px; text-align: center;
+  width: max-content; max-width: 90%; padding: 5px 15px; border-block: 1px solid #9beab7;
+  background: linear-gradient(90deg,transparent,#112920f0 15% 85%,transparent); color: #c5ffda; }
+.army-charge[data-side="sell"] { border-color: #ffa69d; color: #ffd2c9; background: linear-gradient(90deg,transparent,#321d1bf0 15% 85%,transparent); }
+.army-charge b { font-size: clamp(15px,2vw,22px); font-weight: 800; letter-spacing: .075em; line-height: 1.2; }
+.army-charge span { font-size: 11px; color: #f6f4e9; }
+.battle-section-head,.battle-updates { display: flex; gap: 9px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.battle-section-head h3 { margin: 0; display: flex; align-items: center; gap: 7px; color: var(--foreground); font-size: 16px; font-weight: 680; }
+.battle-section-head small,.battle-updates time,.battle-duel small,.battle-buckets small,.battle-print time,.battle-book-sides small,.battle-evidence span {
+  color: var(--secondary); font-size: 12px;
+}
+.battle-duel { margin: 18px 0 10px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.battle-buy { color: var(--green); }
+.battle-sell { color: var(--red); }
+.battle-duel > div { display: grid; gap: 2px; }
+.battle-duel > div:last-child { justify-items: end; text-align: end; }
+.battle-duel span { display: flex; align-items: center; gap: 3px; font-size: 14px; font-weight: 600; }
+.battle-duel b { font-size: clamp(34px,4.8vw,47px); line-height: 1.08; font-weight: 710; letter-spacing: -.035em; }
+.battle-duel em { font-style: normal; margin-left: 3px; font-size: .52em; }
+.battle-duel small { font-size: 13px; overflow-wrap: anywhere; }
+.battle-frontline { position: relative; height: 14px; margin: 14px 0; border-radius: 4px; background: var(--red); }
+.battle-frontline i { position: absolute; inset: 0 auto 0 0; background: var(--green); transition: width .45s ease-out; }
+.battle-frontline, .battle-frontline i { background-image: repeating-linear-gradient(115deg,transparent 0 12px,rgba(255,255,255,.14) 12px 14px); }
+.battle-frontline i { border-radius: 4px 0 0 4px; background-image: repeating-linear-gradient(65deg,transparent 0 12px,rgba(255,255,255,.14) 12px 14px); }
+.battle-frontline b { position: absolute; top: 50%; display: grid; place-items: center; height: 24px; width: 24px;
+  border-radius: 50%; border: 1px solid var(--border); color: var(--foreground); background: var(--card); box-shadow: 0 1px 4px rgb(10 28 43 / 18%);
+  transform: translate(-50%,-50%); transition: left .45s ease-out; }
+.battle-caption { margin: 7px 0 0; color: var(--secondary); font-size: 12px; line-height: 1.55; }
+.battle-buckets { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 6px; margin-top: 12px; }
+.battle-buckets > div { min-width: 0; text-align: center; }
+.battle-bars { display: flex; align-items: end; justify-content: center; gap: 2px; height: 32px; border-bottom: 1px solid var(--border); }
+.battle-bars i,.battle-bars b { display: block; width: min(21%,17px); border-radius: 2px 2px 0 0; transition: height .33s ease-out; }
+.battle-bars i { background: var(--green); }.battle-bars b { background: var(--red); }
+.battle-buckets small { white-space: nowrap; font-size: 11px; }
+.battle-print { margin: 13px 0 0; padding-top: 10px; border-top: 1px solid var(--border); display: flex; align-items: center; flex-wrap: wrap; gap: 3px 9px; font-size: 12px; }
+.battle-print b { color: var(--secondary); font-weight: 500; }
+.battle-print strong { font-size: 13px; }.battle-print time { margin-left: auto; }
+.battle-empty { margin: 14px 0 2px; color: var(--secondary); font-size: 14px; line-height: 1.55; }
+.battle-book-sides,.battle-evidence { margin: 12px 0 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.battle-book-sides > div,.battle-evidence > div { min-width: 0; display: grid; gap: 3px; }
+.battle-book-sides > div + div { border-left: 1px solid var(--border); padding-left: 12px; }
+.battle-book-sides span { font-size: 13px; }.battle-book-sides b { font-size: 18px; line-height: 1.3; overflow-wrap: anywhere; }
+.battle-book-sides b small { font-weight: 500; }
+.battle-evidence { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.battle-evidence > div { padding-left: 9px; border-left: 2px solid var(--border); }
+.battle-evidence b { font-size: 15px; }
+@media (max-width: 1100px) {
+  .trading-workspace .trading-quote:has(> .battle-open) { grid-template-columns: auto auto minmax(max-content,1fr) auto; column-gap: 10px; }
+  .battle-open { gap: 5px; padding-inline: 8px; }
+}
+@media (max-width: 700px) {
+  .trading-workspace .trading-quote:has(> .battle-open) { grid-template-columns: minmax(0,1fr) auto auto auto; gap: 5px; }
+  .battle-open { padding-inline: 6px; min-height: 32px; font-size: 13px; }
+}
+@media (max-width: 510px) {
+  .trading-workspace .trading-quote:has(> .battle-open) { grid-template-columns: minmax(0,1fr) auto auto; }
+  .trading-workspace .trading-quote:has(> .battle-open) .global-search { grid-column: 3; grid-row: 1; }
+  .battle-open { grid-column: 1/-1; grid-row: 2; padding-inline: 10px; }
+  .market-battle { width: calc(100vw - 12px); max-height: 96dvh; border-radius: 12px; }
+  .market-battle:has([data-battle-arena]) { width: calc(100vw - 12px); }
+  .battle-head { padding: 12px; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px; }.battle-body { padding: 10px; gap: 10px; }
+  .battle-head h2 { font-size: 17px; gap: 4px; }
+  .battle-price strong { font-size: 19px; }
+  .battle-arena,.battle-book,.battle-structure { padding: 12px; }
+  .battle-buckets { gap: 3px; }.battle-evidence { gap: 5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .battle-frontline :is(b,i),.battle-bars :is(b,i) { transition: none; }
+  .army-impact { animation: none; }
+}

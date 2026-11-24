@@ -2,6 +2,20 @@ type Language = 'zh' | 'en';
 
 /** Keep numerical details, venue names and provider error codes in translated notices. */
 const phrases: [string,string][] = [
+  ['请选择有效的市场。','Select a supported market.'],
+  ['请选择黄金、白银或WTI原油期货。','Select gold, silver or WTI crude oil futures.'],
+  ['Yahoo Finance 期货行情','Yahoo Finance futures data'],
+  ['来源原始OHLC；换月衔接口径未核验','Provider OHLC; contract roll adjustment is unverified'],
+  ['公开期货行情可能延迟 · 芝加哥交易时段 · 换月可能产生跳空','Public futures quotes may be delayed · Chicago trading hours · Contract rolls may create price gaps'],
+  ['期货行情未通过合约、交易所或计价币种核验。','The contract, exchange or quote currency could not be verified.'],
+  ['期货行情返回的周期与请求不符。','The futures feed returned a different timeframe.'],
+  ['期货行情缺少完整的价格和成交量。','The futures feed is missing price or volume fields.'],
+  ['未能取得该合约的期货行情','Could not load futures data for this contract'],
+  ['暂未接入此期货合约或周期。','This futures contract or timeframe is unsupported.'],
+  ['该合约暂无此周期的有效K线。','No valid candles are available for this contract and timeframe.'],
+  ['历史含非正油价，结构分析从最近一次非正价格之后开始。','Historical oil prices include non-positive values. Structural analysis starts after the last such bar.'],
+  ['部分周期缺少来源交易日，亦无同期原生K线，已跳过。','Periods missing both source trading days and a matching native candle were skipped.'],
+  ['大宗商品','Commodities'],
   ['该标的在当前周期暂时没有可用历史行情。','No historical data is currently available for this instrument and timeframe.'],
   ['已使用东方财富美股公开行情源；公开网页接口可能限流或延迟。','Using Eastmoney public US stock data; public endpoints may be rate limited or delayed.'],
   ['已使用独立腾讯K线源；不同来源的历史和复权口径可能不同。','Using independent Tencent candles; history and adjustment conventions may differ between providers.'],
@@ -16,7 +30,7 @@ const phrases: [string,string][] = [
   ['A股4小时按09:30–11:30、13:00–15:00累计4个交易小时，每个交易日一根，午休不计入。','China A-share 4-hour candles cover 09:30–11:30 and 13:00–15:00: four trading hours per day, excluding the lunch break.'],
   ['美股4小时按纽约正常交易时段聚合：09:30–13:30为4小时，13:30–16:00尾段为2.5小时，分别保留；不跨交易日，自动处理夏令时。','US 4-hour candles follow the New York regular session: 09:30–13:30 is four hours and the separate 13:30–16:00 final segment is 2.5 hours. Candles never span trading days; daylight saving time is handled automatically.'],
   ['聚合K线标记周期起点；仅使用同一来源真实子K线，全部子K收盘且覆盖完整后才确认，未完成尾部不参与收盘信号。','Aggregated candles are start-stamped and use actual lower-interval candles from one provider. Confirmation requires complete coverage and all child candles to close. Unfinished tails are excluded from close-based signals.'],
-  ['提前收市或子K缺失导致覆盖不足的历史区间会跳过；不会补价或跨日拼成4小时。','Historical intervals with incomplete coverage because of early closes or missing child candles are skipped. Prices are never filled or joined across trading days to make four hours.'],
+  ['遇交易所提前收市，按当日实际交易时段聚合；缺少子K线的历史区间会跳过。','Scheduled early closes use the shortened session. Historical intervals with missing source candles are skipped.'],
   ['请输入有效的现货交易对，例如 BTCUSDT。','Enter a valid spot pair, for example BTCUSDT.'],
   ['请输入现货交易对，例如 BTCUSDT。','Enter a spot pair, for example BTCUSDT.'],
   ['请输入美股代码，例如 AAPL、BRK-B。','Enter a US ticker, for example AAPL or BRK-B.'],
@@ -34,7 +48,7 @@ const phrases: [string,string][] = [
   ['该代码不属于美股市场，请重新选择。','This ticker does not belong to the US market. Select another symbol.'],
   ['行情源缺少完整K线。','The provider did not return complete candle data.'],
   ['美股正常交易时段数据，不含盘前盘后；公开网页接口可能限流或延迟。','US regular-session data excludes pre-market and after-hours trading. Public feeds may be rate limited or delayed.'],
-  ['最近K线保守延后15分钟确认；提前收市的日/周K可能延后标为完成。','Recent candles are confirmed with a conservative 15-minute delay. Daily or weekly candles on early-close days may be marked complete later.'],
+  ['美股K线在该周期结束15分钟后确认，覆盖范围内使用交易日历的实际收市时间。','US candles are confirmed 15 minutes after the period ends, using the scheduled close within calendar coverage.'],
   ['1分钟K线由真实分钟OHLC构成；Yahoo最多请求最近7天，页面仍受返回数量限制。','1-minute candles use actual minute OHLC. Yahoo requests cover at most the last 7 days, subject to the returned row limit.'],
   ['月线按纽约自然月聚合；当前月在进入下月后才标记已收盘。','Monthly candles follow New York calendar months. The current month is marked closed only after the next month begins.'],
   ['已排除行情源追加的日内报价或重复月份，月线仅使用已核验粒度的月首OHLC条目。','Appended intraday quotes and duplicate months were removed. Monthly candles use verified monthly OHLC entries only.'],
@@ -44,7 +58,7 @@ const phrases: [string,string][] = [
   ['来源原始OHLC；拆股或其他公司行动可能影响历史比较','Original provider OHLC; splits or other corporate actions may affect historical comparisons'],
   ['Yahoo返回周期与月线不一致，未将季度数据作为月线使用。','Yahoo returned an interval other than monthly. Quarterly data was not used as monthly candles.'],
   ['月份按America/New_York交易日期，当前月进入下月后才标记已收盘。','Months follow America/New_York trading dates. The current month closes only after the next month begins.'],
-  ['周按America/New_York交易日期，当前周在周五正常收盘加15分钟后才确认。','Weeks follow America/New_York trading dates. The current week is confirmed 15 minutes after the regular Friday close.'],
+  ['周线按纽约交易日期，在该周最后一个交易日收市15分钟后确认。','Weekly candles follow New York trading dates and are confirmed 15 minutes after the last scheduled session closes.'],
   ['Yahoo行情不可用，备用源未收录该美股代码；请核对代码或稍后重试。','Yahoo data is unavailable and the fallback provider does not list this US ticker. Check the code or retry later.'],
   ['备用行情源未返回该美股标的的有效数据。','The fallback provider returned no valid data for this US symbol.'],
   ['Yahoo行情暂不可用，已切换东方财富美股备用源；公开网页接口可能限流或延迟。','Yahoo data is unavailable; the Eastmoney US fallback feed is being used. Public feeds may be rate limited or delayed.'],
@@ -181,6 +195,7 @@ export function marketLoadErrorText(message: string, language: Language): string
 export function translateInstrumentName(name: string, language: Language): string {
   if (language === 'zh') return name;
   const names: Record<string,string> = {
+    '黄金期货':'Gold futures','白银期货':'Silver futures','WTI原油期货':'WTI crude oil futures',
     '比特币 Bitcoin': 'Bitcoin', '以太坊 Ethereum': 'Ethereum', '狗狗币 Dogecoin': 'Dogecoin',
     '苹果 Apple': 'Apple', '微软 Microsoft': 'Microsoft', '英伟达 NVIDIA': 'NVIDIA',
     '特斯拉 Tesla': 'Tesla', '亚马逊 Amazon': 'Amazon', '谷歌 Alphabet': 'Alphabet',

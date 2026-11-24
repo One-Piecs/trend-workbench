@@ -2,8 +2,9 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, resolve, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MarketError, getCandles, searchInstruments, parseMarket, parseSearchMarket, parseInterval, resetMarketNetworkFailures } from './market-data.mjs';
+import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures } from './market-data.mjs';
 import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
+import { createHistoryCache } from './history-cache.mjs';
 
 // Market adapters perform no requests at module load. Configure the existing
 // user network route before starting the listener or making any market request.
@@ -40,13 +41,17 @@ async function marketRequest(load){
 
 const appRoot=dirname(fileURLToPath(import.meta.url));
 const publicRoot=resolve(appRoot,'public');
+// The packager replaces this literal. An old process must never read a new
+// release identity from files that were replaced while it was running.
+const buildId='unpackaged';
 const portIndex=process.argv.indexOf('--port');
 const requestedPort=portIndex<0?43127:Number(process.argv[portIndex+1]);
 if(!Number.isInteger(requestedPort)||(requestedPort!==0&&requestedPort<1024)||requestedPort>65535)throw new Error('Invalid local port');
 let port,origin;
-const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.json':'application/json; charset=utf-8'};
+const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.json':'application/json; charset=utf-8','.wav':'audio/wav','.txt':'text/plain; charset=utf-8'};
 const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
 const windows=new Set();
+const archive=createHistoryCache({getCandles,getOlderHistory,latestHistoryGap});
 let exitTimer;
 function shutdown(){
   console.log('No workbench windows remain. Stopping local service.');
@@ -62,13 +67,13 @@ const server=http.createServer(async(req,res)=>{
   res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('X-Frame-Options','DENY');
   // Loopback binding and an exact Host/Origin prevent unrelated web pages from
-  // using this desktop service. The service holds no account credentials.
+  // using the desktop service and its locally configured data feeds.
   if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host||''))return json(res,403,{error:'Local host only'});
   if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Local origin only'});
   if(req.method!=='GET'&&req.method!=='HEAD')return json(res,405,{error:'Read-only endpoint'});
   try{
     const url=new URL(req.url||'/',origin);
-    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'1.3-local',pid:process.pid,activeWindows:windows.size,autoExit:true});
+    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit:true});
     if(url.pathname==='/session'){
       if(req.method!=='GET')return json(res,405,{error:'GET required'});
       clearTimeout(exitTimer);
@@ -85,14 +90,35 @@ const server=http.createServer(async(req,res)=>{
       const market=parseSearchMarket(url.searchParams.get('market'));
       return json(res,200,await marketRequest(()=>searchInstruments(market,q)));
     }
-    if(url.pathname==='/api/candles'){
+    if(url.pathname==='/api/live-quote')return json(res,200,await marketRequest(()=>getWorkbenchLiveQuote(url.searchParams)));
+    if(url.pathname==='/api/battle'){
+      try{return json(res,200,await marketRequest(()=>getBattleTape(url.searchParams)));}
+      catch(error){if(error instanceof RangeError)throw new MarketError(error.message,400);throw error;}
+    }
+    if(url.pathname==='/api/history')return json(res,200,await marketRequest(()=>archive.older(url.searchParams)));
+    if(url.pathname==='/api/candles'||url.pathname==='/api/cached-candles'){
       const market=parseMarket(url.searchParams.get('market'));
       const interval=parseInterval(url.searchParams.get('interval')||'1d',market);
       const symbol=url.searchParams.get('symbol');
       if(!symbol)throw new MarketError('缺少标的代码。',400);
       const limit=Number(url.searchParams.get('limit')||'800');
       if(!Number.isInteger(limit)||limit<1||limit>2000)throw new MarketError('K线数量须为1至2000。',400);
-      return json(res,200,await marketRequest(()=>getCandles(market,symbol,interval,limit)));
+      const normalized=normalizeSymbol(market,symbol);
+      if(url.pathname==='/api/cached-candles'){
+        const snapshot=archive.preview(market,normalized,interval,Math.min(1000,limit));
+        return json(res,snapshot?200:404,snapshot??{error:'没有已保存的历史K线。'});
+      }
+      return json(res,200,await marketRequest(()=>archive.candles(market,normalized,interval,limit)));
+    }
+    if(url.pathname==='/api/spot-flow'||url.pathname==='/api/journal-minutes'){
+      try{
+        await checkNetworkRoute();
+        const load=url.pathname==='/api/spot-flow'?getSpotFlow:getJournalMinutes;
+        return json(res,200,await load(url.searchParams));
+      }catch(error){
+        if(error instanceof RangeError)throw new MarketError(error.message,400);
+        throw error;
+      }
     }
     if(url.pathname.startsWith('/api/'))return json(res,404,{error:'Unknown endpoint'});
     let decoded;

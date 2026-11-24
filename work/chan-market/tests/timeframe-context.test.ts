@@ -36,3 +36,8 @@ test('replay excludes larger bars that closed later even when marked closed now'
   assert.equal(eligibleHigherCandles(data,epoch('2026-11-13T12:00Z')).length,2);
   assert.equal(eligibleHigherCandles(data,NaN).length,0);
 });
+test('Thanksgiving half-day bars become available after the early close and reporting allowance',()=>{
+  for(const [interval,start] of [['1h','2026-11-27T12:30-05:00'],['4h','2026-11-27T09:30-05:00'],['1d','2026-11-27T09:30-05:00'],['1w','2026-11-23T09:30-05:00']] as const){
+    assert.equal(candleAvailableAt(at(start),'us',interval,'Yahoo Finance'),epoch('2026-11-27T13:15-05:00'));
+  }
+});

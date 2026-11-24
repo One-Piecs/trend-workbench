@@ -1,0 +1,45 @@
+name: Verify macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: macos-15
+    timeout-minutes: 6
+    steps:
+      - name: Download the published Apple silicon ZIP and verify its checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$(uname -m)" = arm64
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern Trend-Workbench-macOS-arm64.zip --pattern SHA256SUMS.txt
+          awk '$2 == "Trend-Workbench-macOS-arm64.zip" {print}' SHA256SUMS.txt > mac.sum
+          test -s mac.sum
+          shasum -a 256 -c mac.sum
+      - name: Open the app and check that its webview connects
+        run: |
+          ditto -x -k Trend-Workbench-macOS-arm64.zip unpacked
+          app=$(find unpacked -name '*.app' -type d -prune)
+          test -d "$app"
+          codesign --verify --deep --strict "$app"
+          open -n "$app"
+          for attempt in {1..45}; do
+            if curl -fsS --max-time 2 http://127.0.0.1:43127/health 2>/dev/null | jq -e '.activeWindows > 0'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'The packaged webview did not connect to its service.'
+          exit 1

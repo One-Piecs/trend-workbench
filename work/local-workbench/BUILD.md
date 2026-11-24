@@ -8,7 +8,7 @@
 npm ci --prefix work/chan-market
 npm test --prefix work/chan-market
 npm run typecheck --prefix work/chan-market
-node --test work/local-workbench/network-bootstrap.test.mjs
+node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/windows/launcher.test.mjs
 ```
 
 ## Windows x64

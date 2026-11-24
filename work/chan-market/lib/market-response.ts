@@ -10,11 +10,11 @@ const isInterval = (value: unknown): value is Interval => isText(value) && inter
 // API candles use whole epoch seconds. A modern millisecond stamp would otherwise parse as a far-future year.
 const isTimestamp = (value: unknown): value is number => finite(value) && Number.isSafeInteger(value) && value > 0 && value <= 253402300799;
 
-function isCandle(value: unknown): value is Candle {
+export function isCandle(value: unknown, signedPrices: boolean): value is Candle {
   if (!record(value)) return false;
   const { time, open, high, low, close, volume, closed } = value;
   return isTimestamp(time) && finite(open) && finite(high) && finite(low) && finite(close) && finite(volume)
-    && low > 0 && low <= Math.min(open, close) && high >= Math.max(open, close) && volume >= 0
+    && (signedPrices || low > 0) && low <= Math.min(open, close) && high >= Math.max(open, close) && volume >= 0
     && (closed === undefined || typeof closed === 'boolean');
 }
 
@@ -46,7 +46,7 @@ export async function readMarketResponse(response: Response, expected: RequestId
     throw new Error('行情标的或周期不匹配');
   }
   if (!Array.isArray(candles) || candles.length === 0) throw new Error(messages.empty);
-  if (!candles.every(isCandle) || candles.some((bar, i) => i > 0 && bar.time <= candles[i - 1].time)) {
+  if (!candles.every((bar): bar is Candle => isCandle(bar, expected.market==='commodity')) || candles.some((bar, i) => i > 0 && bar.time <= candles[i - 1].time)) {
     throw new Error('行情源缺少完整K线。');
   }
   const { id, name, exchange, currency } = instrument;
@@ -56,7 +56,9 @@ export async function readMarketResponse(response: Response, expected: RequestId
     || !Array.isArray(availableIntervals) || !availableIntervals.every(isInterval)
     || (history !== undefined && !isHistory(history, candles))) throw new Error(invalidFormat);
   return {
-    instrument: { id, name, exchange, currency, market: expected.market, symbol: expected.symbol }, interval: expected.interval,
+    instrument: { id, name, exchange, currency, market: expected.market, symbol: expected.symbol,
+      ...(expected.market==='commodity' && typeof instrument.contract==='string' &&
+        /^(?:GC|CL|SI)[FGHJKMNQUVXZ]\d{2}$/.test(instrument.contract) && instrument.contract.startsWith(expected.symbol.split('=')[0]) && {contract:instrument.contract}) }, interval: expected.interval,
     candles, source, asOf, adjustment, delayNotice, warnings, availableIntervals, ...(history && { history }),
   };
 }

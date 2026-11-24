@@ -63,22 +63,35 @@ test('current continuous partial session remains unclosed; missing current slots
   assert.equal(full.candles[0].closed,false);
 });
 
-test('US hourly bars handle the shortened last child and do not call half-day candles complete', () => {
+test('US hourly bars cover the scheduled morning even if an ordinary afternoon is absent', () => {
   const ordinary = day('2026-11-12',usHours,'-05:00');
   const halfDay = day('2026-11-13',usHours.slice(0,4),'-05:00');
   const result = aggregateEquityFourHour([...ordinary,...halfDay],{market:'us',sourceInterval:'1h',timestamp:'start',now:later});
-  assert.equal(result.candles.length,2);
+  assert.equal(result.candles.length,3);
   assert.equal(result.candles[1].volume,45);
-  assert.equal(result.discardedBuckets,1);
+  assert.equal(result.discardedBuckets,0); // The absent final tail is outside the returned source window.
   assert.ok(result.candles.every(c=>c.closed));
   const ongoing = aggregateEquityFourHour(halfDay,{market:'us',sourceInterval:'1h',timestamp:'start',now:time('2026-11-13T14:00:00-05:00')});
-  assert.equal(ongoing.candles[0].closed,false);
+  assert.equal(ongoing.candles[0].closed,true);
 });
 
-test('half-hour half-day coverage is dropped and never padded to four hours', () => {
+test('the seven observed half-hours on Black Friday form one 3.5-hour candle', () => {
   const result = aggregateEquityFourHour(day('2026-11-27',usStarts.slice(0,7),'-05:00'),{market:'us',sourceInterval:'30m',timestamp:'start',now:later});
-  assert.equal(result.candles.length,0);
-  assert.equal(result.discardedBuckets,1);
+  assert.equal(result.candles.length,1);
+  assert.equal(result.candles[0].closed,true);
+  assert.equal(result.candles[0].volume,91);
+  assert.equal(result.discardedBuckets,0);
+});
+
+test('ordinary missing sessions are counted without inferring a halt or counting a holiday',()=>{
+  const options={market:'us',sourceInterval:'1h',timestamp:'start',now:later} as const;
+  const rows=[...day('2026-11-24',usHours,'-05:00'),...day('2026-11-27',usHours.slice(0,4),'-05:00')];
+  const result=aggregateEquityFourHour(rows,options);
+  assert.equal(result.missingSessions,1); // Wednesday missing, Thursday Thanksgiving.
+  assert.equal(result.discardedBuckets,2);
+  assert.equal(result.candles.length,3);
+  const extra=aggregateEquityFourHour([...rows,...day('2026-11-27',['13:30','14:30'],'-05:00')],options);
+  assert.equal(extra.excludedRows,2);assert.deepEqual(extra.candles,result.candles);
 });
 
 test('instantaneous Yahoo quote, malformed prices, and off-grid data cannot contaminate OHLC', () => {
