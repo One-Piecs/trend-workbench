@@ -8,7 +8,7 @@
 npm ci --prefix work/chan-market
 npm test --prefix work/chan-market
 npm run typecheck --prefix work/chan-market
-node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/watchlist-sync.test.mjs work/local-workbench/server.test.mjs work/local-workbench/windows/launcher.test.mjs
+node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/watchlist-sync.test.mjs work/local-workbench/longbridge-hub-stream.test.mjs work/local-workbench/server.test.mjs work/local-workbench/windows/launcher.test.mjs
 ```
 
 ## Windows x64
@@ -45,7 +45,7 @@ Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.s
 脚本会自动校验并安装官方独立 Node.js `24.14.1` 至 `~/.local/opt/node24`（不修改系统 `/usr/bin/node`），在依赖或 `package-lock.json` 变化时执行 `npm ci`，构建 `outputs/shared/` 并运行 `work/local-workbench` 测试，随后生成或保留 `~/.config/systemd/user/trend-workbench.service`（传入 `--no-auto-exit` 保持常驻）、重启服务并校验 `http://127.0.0.1:44123/health` 的 `buildId` 与 `autoExit: false`。后续代码更新只需 `git pull --ff-only && ./deploy/linux/deploy.sh`。
 
 - **保持登出后继续运行**：首次在宿主机启用 linger：`sudo loginctl enable-linger "$USER"`。
-- **访问方式**：服务默认仅监听 `127.0.0.1:44123` 且校验本机 `Host`/`Origin`。推荐在本机用 SSH 端口转发访问：`ssh -L 44123:127.0.0.1:44123 <user>@<host>` 后打开 `http://127.0.0.1:44123`。若经由私网/Tailscale 内 Nginx 反代，需改写 `Host` 与 `Origin`（如 `proxy_set_header Host 127.0.0.1:44123;`、`proxy_set_header Origin "";`）并为 `/session` 关闭缓冲（`proxy_buffering off;`、`proxy_http_version 1.1;`、`proxy_read_timeout 3600s;`），切勿无鉴权暴露到公网。
+- **访问方式**：服务默认仅监听 `127.0.0.1:44123` 且校验本机 `Host`/`Origin`。推荐在本机用 SSH 端口转发访问：`ssh -L 44123:127.0.0.1:44123 <user>@<host>` 后打开 `http://127.0.0.1:44123`。若经由私网/Tailscale 内 Nginx 反代，需改写 `Host` 与 `Origin`（如 `proxy_set_header Host 127.0.0.1:44123;`、`proxy_set_header Origin "";`）并为 `/session` 与 `/api/live-stream` 关闭缓冲（`proxy_buffering off;`、`proxy_http_version 1.1;`、`proxy_read_timeout 3600s;`），切勿无鉴权暴露到公网。
 - **覆写环境变量**：服务单元示例见 `deploy/linux/trend-workbench.service.example`。可用 `systemctl --user edit trend-workbench.service` 添加覆写项（例如设置 `Environment=TREND_WORKBENCH_LONGBRIDGE_KLINE=0` 关闭服务端 Longbridge 夜盘调用）；`deploy.sh` 默认保留已有 unit 文件，如需按参数重写可执行 `./deploy/linux/deploy.sh --update-service`。
 
 ## 自选历史缓存与后台增量采集
@@ -67,6 +67,12 @@ Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.s
   - `TREND_WORKBENCH_CACHE_MAX_MB`：SQLite 最大磁盘占用上限（MB），默认 `2048`。
   - `TREND_WORKBENCH_CACHE_PATH`：自定义 SQLite 缓存文件路径。
 
-## 美股夜盘行情（可选）
+## Longbridge Hub 与多市场实时行情（可选）
 
-美股分钟级周期默认使用公开正常时段来源。若本机安装并登录了 [Longbridge CLI](https://open.longbridge.com/docs/cli/install)（`longbridge auth login`），本地服务会自动启用 Longbridge 行情源，在 1/5/15/30 分钟和 1 小时 K 线中包含美股盘前、盘后与夜盘时段。未安装或未登录时，工作台自动回退到公开来源，功能不受影响。也可用环境变量显式控制：`TREND_WORKBENCH_LONGBRIDGE_KLINE=1` 启用，`=0` 禁用。Longbridge 历史K线按标的配额计费，详见其官方文档。
+工作台支持优先接入独立的 `longbridge-hub` 行情网关，并在 `/api/live-stream` 提供 WebSocket → SSE 实时推送：
+
+- **自动发现与环境变量**：服务启动时若存在 `TREND_WORKBENCH_LONGBRIDGE_HUB_URL`（搭配 `TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN` 或 `LB_HUB_API_TOKEN`），或存在 `~/.config/longbridge-hub/hub.env`（可用 `TREND_WORKBENCH_LONGBRIDGE_HUB_ENV` 指定）且本机 Hub `/health` 可用，则自动启用；设置 `TREND_WORKBENCH_LONGBRIDGE_HUB=0` 可显式禁用。
+- **分市场能力门控**：
+  - 美股（含盘前、盘后、夜盘）与港股在 Hub `usRealtime` / `hkRealtime` 就绪时优先走 Hub，并自动回退到 Longbridge CLI 或公开网页来源；
+  - A 股仅在 Hub `/health` 确认拥有 A 股 LV1/LV2 实时权限（`cnRealtime: true`）时切换至 Hub；若 Hub 仅为 `CN_Basic` / `Delay` 延迟行情（`cnRealtime: false`），则自动跳过 Hub 并继续沿用东方财富 / 腾讯 / 新浪公开源。
+- **Longbridge CLI 后备方案**：若未部署 `longbridge-hub` 但本机安装并登录了 [Longbridge CLI](https://open.longbridge.com/docs/cli/install)（`longbridge auth login`），本地服务仍会自动启用 Longbridge CLI 美股夜盘支持；可用 `TREND_WORKBENCH_LONGBRIDGE_KLINE=1` / `0` 显式开关。Longbridge 历史 K 线按标的配额计费，详见其官方文档。

@@ -57,4 +57,4 @@
 
 行情适配、缠论分析和双语界面的源码在 [work/chan-market](work/chan-market)。自行运行测试与打包请参阅 [Windows 和 macOS 构建说明](work/local-workbench/BUILD.md)。
 
-项目代码采用 Apache License 2.0。战场使用的三段现场录音各按原许可分发，署名文件列有作者、原始录音、许可和剪辑方式。[项目许可](LICENSE) · [署名](NOTICE) · [录音来源与许可](work/chan-market/public/battle-audio/credits.txt)
+项目代码采用 Apache License 2.0。战场使用的三段现场录音各按原许可分发，署名文件列有作者、原始录音、许可和剪辑方式。[更新日志](CHANGELOG.md) · [项目许可](LICENSE) · [署名](NOTICE) · [录音来源与许可](work/chan-market/public/battle-audio/credits.txt)
