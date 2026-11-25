@@ -71,7 +71,18 @@ Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.s
 
 工作台支持优先接入独立的 `longbridge-hub` 行情网关，并在 `/api/live-stream` 提供 WebSocket → SSE 实时推送：
 
-- **自动发现与环境变量**：服务启动时若存在 `TREND_WORKBENCH_LONGBRIDGE_HUB_URL`（搭配 `TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN` 或 `LB_HUB_API_TOKEN`），或存在 `~/.config/longbridge-hub/hub.env`（可用 `TREND_WORKBENCH_LONGBRIDGE_HUB_ENV` 指定）且本机 Hub `/health` 可用，则自动启用；设置 `TREND_WORKBENCH_LONGBRIDGE_HUB=0` 可显式禁用。
+- **自动发现与环境变量**：服务启动时按以下顺序探测并自动启用：
+  1. 显式环境变量 `TREND_WORKBENCH_LONGBRIDGE_HUB_URL`（搭配 `TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN` 或 `LB_HUB_API_TOKEN`），设置 `TREND_WORKBENCH_LONGBRIDGE_HUB=0` 可显式禁用；
+  2. 桌面端与本机配置文件（适合双击打开 macOS `.app` / Windows `.vbs` 时接入远端或本机 Hub，亦可用 `TREND_WORKBENCH_LONGBRIDGE_HUB_ENV` 指定单个路径）：
+     - 通用：`~/.config/trend-workbench/hub.env`
+     - macOS：`~/Library/Application Support/TrendWorkbench/hub.env`
+     - Windows：`%APPDATA%\TrendWorkbench\hub.env`（及 `%LOCALAPPDATA%\TrendWorkbench\hub.env`）
+     - 本机同跑 Hub 回退：`~/.config/longbridge-hub/hub.env`（按 `LB_HUB_PORT` 探测 `127.0.0.1`）
+  配置文件支持 `TREND_WORKBENCH_LONGBRIDGE_HUB_URL`（或 `LB_HUB_URL`）、`TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN`（或 `LB_HUB_API_TOKEN`）以及 `TREND_WORKBENCH_LONGBRIDGE_HUB=0`。例如桌面端直连 Tailscale 私网 Hub：
+  ```ini
+  TREND_WORKBENCH_LONGBRIDGE_HUB_URL=http://100.123.123.2:44130
+  TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN=<你的_LB_HUB_API_TOKEN>
+  ```
 - **分市场能力门控**：
   - 美股（含盘前、盘后、夜盘）与港股在 Hub `usRealtime` / `hkRealtime` 就绪时优先走 Hub，并自动回退到 Longbridge CLI 或公开网页来源；
   - A 股仅在 Hub `/health` 确认拥有 A 股 LV1/LV2 实时权限（`cnRealtime: true`）时切换至 Hub；若 Hub 仅为 `CN_Basic` / `Delay` 延迟行情（`cnRealtime: false`），则自动跳过 Hub 并继续沿用东方财富 / 腾讯 / 新浪公开源。

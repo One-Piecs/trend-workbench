@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, resolve, relative, extname, join } from 'node:path';
+import { basename, dirname, resolve, relative, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures, getLongbridgeHubCapabilities, isLongbridgeHubConfigured, toLongbridgeTicker } from './market-data.mjs';
@@ -16,39 +16,75 @@ import { createLongbridgeHubStream } from './longbridge-hub-stream.mjs';
 const checkNetworkRoute=createNetworkRouteMonitor({onRouteChange:resetMarketNetworkFailures});
 await checkNetworkRoute();
 
+function parseHubUrl(raw){
+  if(typeof raw!=='string'||!raw.trim())return '';
+  try{
+    const u=new URL(raw.trim());
+    if(!['http:','https:'].includes(u.protocol)||!u.hostname)return '';
+    return u.toString().replace(/\/+$/,'');
+  }catch{return '';}
+}
+
 function parseHubEnv(text){
-  let port='44130',token='';
+  let url='',lbUrl='',port='',token='',lbToken='',disabled=false;
   for(const rawLine of text.split(/\r?\n/)){
-    const line=rawLine.trim();
-    if(!line||line.startsWith('#'))continue;
+    const trimmed=rawLine.trim();
+    if(!trimmed||trimmed.startsWith('#'))continue;
+    const line=trimmed.startsWith('export ')?trimmed.slice(7).trim():trimmed;
     const eq=line.indexOf('=');
     if(eq<=0)continue;
     const k=line.slice(0,eq).trim();
     let v=line.slice(eq+1).trim();
     if((v.startsWith('"')&&v.endsWith('"'))||(v.startsWith("'")&&v.endsWith("'")))v=v.slice(1,-1);
-    if(k==='LB_HUB_PORT'&&/^\d+$/.test(v))port=v;
-    if(k==='LB_HUB_API_TOKEN')token=v;
+    if(k==='TREND_WORKBENCH_LONGBRIDGE_HUB'&&v==='0')disabled=true;
+    else if(k==='TREND_WORKBENCH_LONGBRIDGE_HUB_URL')url=parseHubUrl(v);
+    else if(k==='LB_HUB_URL')lbUrl=parseHubUrl(v);
+    else if(k==='LB_HUB_PORT'&&/^\d+$/.test(v))port=v;
+    else if(k==='TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN')token=v;
+    else if(k==='LB_HUB_API_TOKEN')lbToken=v;
   }
-  return {port,token};
+  return {disabled,url:url||lbUrl,port,token:token||lbToken};
+}
+
+function hubEnvCandidates(){
+  if(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_ENV){
+    return [process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_ENV];
+  }
+  const candidates=[join(homedir(),'.config','trend-workbench','hub.env')];
+  if(process.platform==='darwin'){
+    candidates.push(join(homedir(),'Library','Application Support','TrendWorkbench','hub.env'));
+  }else if(process.platform==='win32'){
+    if(process.env.APPDATA)candidates.push(join(process.env.APPDATA,'TrendWorkbench','hub.env'));
+    if(process.env.LOCALAPPDATA)candidates.push(join(process.env.LOCALAPPDATA,'TrendWorkbench','hub.env'));
+  }
+  candidates.push(join(homedir(),'.config','longbridge-hub','hub.env'));
+  return [...new Set(candidates)];
 }
 
 if(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB!=='0'){
   if(!process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL){
-    const envPath=process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_ENV||join(homedir(),'.config','longbridge-hub','hub.env');
-    try{
-      const {port:hubPort,token}=parseHubEnv(readFileSync(envPath,'utf8'));
-      const candidateUrl=`http://127.0.0.1:${hubPort}`;
-      const probe=await fetch(`${candidateUrl}/health`,{signal:AbortSignal.timeout(1500)});
-      if(probe.ok){
-        const health=await probe.json().catch(()=>null);
-        if(health&&typeof health==='object'&&'upstream' in health){
-          process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL=candidateUrl;
-          if(token&&!process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN){
-            process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN=token;
+    for(const envPath of hubEnvCandidates()){
+      let rawText='';
+      try{rawText=readFileSync(envPath,'utf8');}catch{continue;}
+      const parsed=parseHubEnv(rawText);
+      if(parsed.disabled)break;
+      const isDefaultHubEnv=basename(dirname(envPath))==='longbridge-hub'&&basename(envPath)==='hub.env';
+      const candidateUrl=parsed.url||(parsed.port||isDefaultHubEnv?`http://127.0.0.1:${parsed.port||'44130'}`:'');
+      if(!candidateUrl)continue;
+      try{
+        const probe=await fetch(`${candidateUrl}/health`,{signal:AbortSignal.timeout(2000)});
+        if(probe.ok){
+          const health=await probe.json().catch(()=>null);
+          if(health&&typeof health==='object'&&'upstream' in health){
+            process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL=candidateUrl;
+            if(parsed.token&&!process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN){
+              process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN=parsed.token;
+            }
+            break;
           }
         }
-      }
-    }catch{}
+      }catch{}
+    }
   }
   if(isLongbridgeHubConfigured()){
     const caps=await getLongbridgeHubCapabilities({force:true});

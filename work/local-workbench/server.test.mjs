@@ -24,8 +24,11 @@ export const parseInterval=v=>v;
 export const normalizeSymbol=(_m,s)=>String(s).trim().toUpperCase();
 export const latestHistoryGap=()=>null;
 export const resetMarketNetworkFailures=()=>{};
-export const getLongbridgeHubCapabilities=async()=>({configured:false,ready:false,status:'unconfigured',usRealtime:false,hkRealtime:false,cnRealtime:false,packages:[]});
-export const isLongbridgeHubConfigured=()=>false;
+export const getLongbridgeHubCapabilities=async()=>{
+  const configured=Boolean(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL&&process.env.TREND_WORKBENCH_LONGBRIDGE_HUB!=='0');
+  return {configured,ready:configured,status:configured?'connected':'unconfigured',usRealtime:configured,hkRealtime:configured,cnRealtime:false,packages:[]};
+};
+export const isLongbridgeHubConfigured=()=>Boolean(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL&&process.env.TREND_WORKBENCH_LONGBRIDGE_HUB!=='0');
 export const toLongbridgeTicker=(_m,s)=>s;
 `;
 const networkStub=`export function createNetworkRouteMonitor(){return async()=>({revision:1,status:{mode:'direct',applied:true}});}
@@ -340,5 +343,72 @@ test('cache candles and worker backtest endpoints validate params and run off-th
   }finally{
     await srv.stop();
     await rm(dir,{recursive:true,force:true});
+  }
+});
+
+test('desktop hub.env connects to remote or local longbridge-hub URLs, supports disable flag, and never leaks tokens',async()=>{
+  const hubSecret='super-secret-hub-token-9876';
+  const mockHub=http.createServer((req,res)=>{
+    if(req.url==='/health'){
+      res.writeHead(200,{'Content-Type':'application/json'});
+      res.end(JSON.stringify({status:'ok',upstream:{ready:true,status:'connected',packages:[]}}));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  mockHub.listen(0,'127.0.0.1');
+  await once(mockHub,'listening');
+  const hubPort=mockHub.address().port;
+  const hubUrl=`http://127.0.0.1:${hubPort}`;
+
+  const dir=await stageServer();
+  const envDir=await mkdtemp(join(tmpdir(),'trend-hub-env-'));
+  try{
+    // Case 1: Explicit TREND_WORKBENCH_LONGBRIDGE_HUB_URL + TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN
+    const envFile1=join(envDir,'hub-explicit.env');
+    await writeFile(envFile1,`TREND_WORKBENCH_LONGBRIDGE_HUB_URL=${hubUrl}/\nTREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN="${hubSecret}"\n`);
+    const srv1=await startServer(dir,{
+      args:['--no-auto-exit'],
+      env:{TREND_WORKBENCH_LONGBRIDGE_HUB:'',TREND_WORKBENCH_LONGBRIDGE_HUB_URL:'',TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN:'',TREND_WORKBENCH_LONGBRIDGE_HUB_ENV:envFile1},
+    });
+    try{
+      const res=await sendHttp(srv1.port,'/health');
+      assert.equal(res.status,200);
+      assert.ok(!res.body.includes(hubSecret),'token must never appear in /health');
+      const health=JSON.parse(res.body);
+      assert.deepEqual(health.longbridgeHub,{configured:true,ready:true,status:'connected',usRealtime:true,hkRealtime:true,cnRealtime:false});
+    }finally{await srv1.stop();}
+
+    // Case 2: LB_HUB_URL + LB_HUB_API_TOKEN
+    const envFile2=join(envDir,'hub-lb.env');
+    await writeFile(envFile2,`# remote tailscale or LAN hub\nLB_HUB_URL=${hubUrl}\nLB_HUB_API_TOKEN=${hubSecret}\n`);
+    const srv2=await startServer(dir,{
+      args:['--no-auto-exit'],
+      env:{TREND_WORKBENCH_LONGBRIDGE_HUB:'',TREND_WORKBENCH_LONGBRIDGE_HUB_URL:'',TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN:'',TREND_WORKBENCH_LONGBRIDGE_HUB_ENV:envFile2},
+    });
+    try{
+      const res=await sendHttp(srv2.port,'/health');
+      assert.equal(res.status,200);
+      assert.ok(!res.body.includes(hubSecret));
+      assert.equal(JSON.parse(res.body).longbridgeHub.configured,true);
+    }finally{await srv2.stop();}
+
+    // Case 3: TREND_WORKBENCH_LONGBRIDGE_HUB=0 disables hub even with URL present
+    const envFile3=join(envDir,'hub-disabled.env');
+    await writeFile(envFile3,`TREND_WORKBENCH_LONGBRIDGE_HUB=0\nLB_HUB_URL=${hubUrl}\nLB_HUB_API_TOKEN=${hubSecret}\n`);
+    const srv3=await startServer(dir,{
+      args:['--no-auto-exit'],
+      env:{TREND_WORKBENCH_LONGBRIDGE_HUB:'',TREND_WORKBENCH_LONGBRIDGE_HUB_URL:'',TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN:'',TREND_WORKBENCH_LONGBRIDGE_HUB_ENV:envFile3},
+    });
+    try{
+      const res=await sendHttp(srv3.port,'/health');
+      assert.equal(res.status,200);
+      assert.equal(JSON.parse(res.body).longbridgeHub.configured,false);
+    }finally{await srv3.stop();}
+  }finally{
+    mockHub.close();
+    mockHub.closeAllConnections?.();
+    await rm(dir,{recursive:true,force:true});
+    await rm(envDir,{recursive:true,force:true});
   }
 });

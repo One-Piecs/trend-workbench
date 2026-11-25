@@ -20,7 +20,7 @@
   - 在 `work/local-workbench/server.mjs` 新增 `GET /api/live-stream`（`text/event-stream`）向下游推送 `status`、`candle` 与 `quote` 事件；
   - 更新前端 `work/chan-market/lib/live-stream.ts`、`work/chan-market/lib/live-candle.ts`、`work/chan-market/hooks/use-live-candles.ts` 与 `work/chan-market/app/page.tsx`：当使用 Longbridge 行情源时通过 `EventSource` 实时更新在走 K 线与顶部最新报价，SSE 推流健康时自动暂停冗余的 `/api/live-quote` 轮询，断线降级时自动恢复轮询。
 - **Hub 自动发现与健康检查**：
-  - `server.mjs` 启动时按 `TREND_WORKBENCH_LONGBRIDGE_HUB`、`TREND_WORKBENCH_LONGBRIDGE_HUB_URL`/`TOKEN` 或本地 `~/.config/longbridge-hub/hub.env`（可通过 `TREND_WORKBENCH_LONGBRIDGE_HUB_ENV` 指定）自动探测 `longbridge-hub` 服务，并在 `GET /health` 返回 `longbridgeHub` 能力摘要（不暴露任何 Token）。
+  - `server.mjs` 启动时依次读取环境变量（`TREND_WORKBENCH_LONGBRIDGE_HUB`、`TREND_WORKBENCH_LONGBRIDGE_HUB_URL`/`TOKEN`）、桌面端配置文件（`~/.config/trend-workbench/hub.env`、macOS `~/Library/Application Support/TrendWorkbench/hub.env`、Windows `%APPDATA%\TrendWorkbench\hub.env`）及本机 `~/.config/longbridge-hub/hub.env`（支持 `TREND_WORKBENCH_LONGBRIDGE_HUB_URL`/`LB_HUB_URL` 指向远端或本机 Hub），并在 `GET /health` 返回 `longbridgeHub` 能力摘要（不暴露任何 Token）。
 - **测试覆盖**：
   - 新增 `work/chan-market/tests/longbridge-hub.test.ts` 与 `work/local-workbench/longbridge-hub-stream.test.mjs`，并补充 `history-cache.test.mjs`、`watchlist-sync.test.mjs`、`quote-overlay.test.ts` 与 `search-all.test.ts` 用例。
 
