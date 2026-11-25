@@ -1,17 +1,60 @@
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { dirname, resolve, relative, extname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, resolve, relative, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures } from './market-data.mjs';
+import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures, getLongbridgeHubCapabilities, isLongbridgeHubConfigured, toLongbridgeTicker } from './market-data.mjs';
 import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
 import { createHistoryCache } from './history-cache.mjs';
 import { createWatchlistSync } from './watchlist-sync.mjs';
+import { createLongbridgeHubStream } from './longbridge-hub-stream.mjs';
 
 // Market adapters perform no requests at module load. Configure the existing
 // user network route before starting the listener or making any market request.
 const checkNetworkRoute=createNetworkRouteMonitor({onRouteChange:resetMarketNetworkFailures});
 await checkNetworkRoute();
+
+function parseHubEnv(text){
+  let port='44130',token='';
+  for(const rawLine of text.split(/\r?\n/)){
+    const line=rawLine.trim();
+    if(!line||line.startsWith('#'))continue;
+    const eq=line.indexOf('=');
+    if(eq<=0)continue;
+    const k=line.slice(0,eq).trim();
+    let v=line.slice(eq+1).trim();
+    if((v.startsWith('"')&&v.endsWith('"'))||(v.startsWith("'")&&v.endsWith("'")))v=v.slice(1,-1);
+    if(k==='LB_HUB_PORT'&&/^\d+$/.test(v))port=v;
+    if(k==='LB_HUB_API_TOKEN')token=v;
+  }
+  return {port,token};
+}
+
+if(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB!=='0'){
+  if(!process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL){
+    const envPath=process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_ENV||join(homedir(),'.config','longbridge-hub','hub.env');
+    try{
+      const {port:hubPort,token}=parseHubEnv(readFileSync(envPath,'utf8'));
+      const candidateUrl=`http://127.0.0.1:${hubPort}`;
+      const probe=await fetch(`${candidateUrl}/health`,{signal:AbortSignal.timeout(1500)});
+      if(probe.ok){
+        const health=await probe.json().catch(()=>null);
+        if(health&&typeof health==='object'&&'upstream' in health){
+          process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL=candidateUrl;
+          if(token&&!process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN){
+            process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN=token;
+          }
+        }
+      }
+    }catch{}
+  }
+  if(isLongbridgeHubConfigured()){
+    const caps=await getLongbridgeHubCapabilities({force:true});
+    console.log(`Longbridge Hub connected (${caps.ready?'ready':caps.status}, US:${caps.usRealtime}, HK:${caps.hkRealtime}, CN:${caps.cnRealtime})`);
+  }
+}
 
 // US overnight (pre/post/night) candles need the Longbridge CLI on this machine.
 // Auth and quota are managed by the user's own `longbridge` login; without the
@@ -57,7 +100,22 @@ const windows=new Set();
 const archive=createHistoryCache({getCandles,getOlderHistory,latestHistoryGap});
 const watchlistSyncEnabled=process.env.TREND_WORKBENCH_WATCHLIST_SYNC==='1'||(!autoExit&&process.env.TREND_WORKBENCH_WATCHLIST_SYNC!=='0');
 let interactiveInFlight=0;
-const watchlistSync=createWatchlistSync({archive,enabled:watchlistSyncEnabled,isInteractiveBusy:()=>interactiveInFlight>0});
+const watchlistSync=createWatchlistSync({
+  archive,
+  enabled:watchlistSyncEnabled,
+  isInteractiveBusy:()=>interactiveInFlight>0,
+  longbridgeEnabled:()=>process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE==='1'||isLongbridgeHubConfigured(),
+});
+const hubStream=createLongbridgeHubStream({
+  getConfig:()=>{
+    if(process.env.TREND_WORKBENCH_LONGBRIDGE_HUB==='0')return null;
+    const baseUrl=process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_URL?.trim().replace(/\/+$/,'');
+    if(!baseUrl)return null;
+    const token=process.env.TREND_WORKBENCH_LONGBRIDGE_HUB_TOKEN?.trim()||process.env.LB_HUB_API_TOKEN?.trim()||'';
+    return {baseUrl,token};
+  },
+  getCapabilities:()=>getLongbridgeHubCapabilities(),
+});
 async function interactiveRequest(load){
   interactiveInFlight++;
   try{return await load();}
@@ -163,6 +221,7 @@ function runBacktestWorker({appRoot,primary,higher,canLoadMinutes,options,archiv
 }
 function shutdown(reason='No workbench windows remain. Stopping local service.'){
   console.log(reason);
+  hubStream.close();
   if(activeBacktestWorker){try{void activeBacktestWorker.terminate();}catch{}activeBacktestWorker=null;}
   void watchlistSync.stop();
   for(const window of windows)window.end();
@@ -184,7 +243,27 @@ const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url||'/',origin);
     const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist')||(req.method==='POST'&&url.pathname==='/api/validation/run');
     if(!allowedMethod)return json(res,405,{error:'Read-only endpoint'});
-    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit,longbridge:process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE==='1',watchlistSync:watchlistSync.status().enabled});
+    if(url.pathname==='/health'){
+      const hub=await getLongbridgeHubCapabilities();
+      return json(res,200,{
+        app:'trend-workbench',
+        version:'VERSION_FROM_PACKAGE',
+        buildId,
+        pid:process.pid,
+        activeWindows:windows.size,
+        autoExit,
+        longbridge:process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE==='1',
+        longbridgeHub:{
+          configured:hub.configured,
+          ready:hub.ready,
+          status:hub.status,
+          usRealtime:hub.usRealtime,
+          hkRealtime:hub.hkRealtime,
+          cnRealtime:hub.cnRealtime,
+        },
+        watchlistSync:watchlistSync.status().enabled,
+      });
+    }
     if(url.pathname==='/session'){
       if(req.method!=='GET')return json(res,405,{error:'GET required'});
       clearTimeout(exitTimer);
@@ -304,6 +383,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,await interactiveRequest(()=>marketRequest(()=>searchInstruments(market,q))));
     }
     if(url.pathname==='/api/live-quote')return json(res,200,await interactiveRequest(()=>marketRequest(()=>getWorkbenchLiveQuote(url.searchParams))));
+    if(url.pathname==='/api/live-stream')return await hubStream.handleRequest(req,res,url,{parseMarket,parseInterval,normalizeSymbol,toLongbridgeTicker});
     if(url.pathname==='/api/battle'){
       try{return json(res,200,await interactiveRequest(()=>marketRequest(()=>getBattleTape(url.searchParams))));}
       catch(error){if(error instanceof RangeError)throw new MarketError(error.message,400);throw error;}

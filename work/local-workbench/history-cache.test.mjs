@@ -220,3 +220,31 @@ test('readSeries, readCompatibleHigher, and readMinuteWindows return contiguous 
     await rm(dir,{recursive:true,force:true});
   }
 });
+
+test('Longbridge HK and realtime CN sources are retained by history cache',async()=>{
+  const hkSource='Longbridge OpenAPI 港股行情 · open.longbridge.com';
+  const cnSource='Longbridge OpenAPI A股实时行情 · open.longbridge.com';
+  const lbAdjustment='不复权（原始价格）；成交量单位：股';
+  const archive=createHistoryCache({
+    filename:':memory:',
+    getCandles:async(market,symbol)=>({
+      instrument:{id:`${market}:${symbol}`,market,symbol,name:symbol,exchange:market==='hk'?'港交所':'上交所',currency:market==='hk'?'HKD':'CNY'},
+      interval:'5m',
+      candles:range(0,19),
+      source:market==='hk'?hkSource:cnSource,
+      adjustment:lbAdjustment,
+      delayNotice:'',
+      warnings:[],
+      availableIntervals:['5m'],
+      asOf:new Date(minute(100)*1000).toISOString(),
+    }),
+  });
+  try{
+    await archive.candles('hk','00700.HK','5m',20);
+    await archive.candles('cn','600519.SH','5m',20);
+    assert.equal(archive.preview('hk','00700.HK','5m')?.candles.length,20);
+    assert.equal(archive.preview('cn','600519.SH','5m')?.candles.length,20);
+  }finally{
+    archive.close();
+  }
+});

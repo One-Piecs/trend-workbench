@@ -7,7 +7,7 @@ import type {MarketData} from '@/lib/market-types';
 import type {MarketForecast} from '@/lib/forecast-types';
 
 interface Props {records:DirectionBook[];saved:boolean;data:MarketData|null;forecast?:MarketForecast|null}
-const markets={crypto:['加密货币','Crypto'],cn:['A股','A-shares'],us:['美股','US equities'],commodity:['大宗商品','Commodities']} as const;
+const markets={crypto:['加密货币','Crypto'],cn:['A股','A-shares'],hk:['港股','HK equities'],us:['美股','US equities'],commodity:['大宗商品','Commodities']} as const;
 const pct=(x:number,n:number)=>n?(100*x/n).toFixed(1)+'%':'—';
 const points=(value:number)=>(value>0?'+':'')+value.toFixed(1);
 

@@ -25,7 +25,7 @@ export function forecastIdentity(data:Pick<MarketData,'instrument'|'interval'|'s
   return [data.instrument.market,data.instrument.symbol,data.interval,data.source,data.adjustment].join('|');
 }
 const validBar=(b:Candle,allowSigned=false)=>[b.time,b.open,b.high,b.low,b.close].every(Number.isFinite)&&b.time>0&&(b.low>0||allowSigned)&&b.high>=Math.max(b.open,b.close)&&b.low<=Math.min(b.open,b.close);
-function localStart(date:string,market:'cn'|'us'):number {
+function localStart(date:string,market:'cn'|'hk'|'us'):number {
   const wall=Date.parse(`${date}T00:00:00Z`)/1000+570*60;
   let guess=wall;
   for(let i=0;i<3;i++){const c=exchangeClock(guess,market);guess+=wall-(Date.parse(`${c.date}T00:00:00Z`)/1000+c.minute*60);}
@@ -41,7 +41,7 @@ export function forecastBarStart(b:Candle,data:Pick<MarketData,'instrument'|'int
     if(period==='1w')date.setUTCDate(date.getUTCDate()-(date.getUTCDay()+6)%7);
     return localStart(date.toISOString().slice(0,10),market);
   }
-  if(market==='cn'||/东方财富|Eastmoney|周期结束/i.test(data.source)) {
+  if((market==='cn'&&!/Longbridge/i.test(data.source))||/东方财富|Eastmoney|周期结束/i.test(data.source)) {
     const span=({'1m':60,'5m':300,'15m':900,'30m':1800,'1h':3600} as const)[period as '1m'|'5m'|'15m'|'30m'|'1h'];
     return b.time-span;
   }
@@ -60,6 +60,7 @@ function missingBars(previous:number,next:number,data:MarketData):boolean {
   if(a.date!==b.date)return false;
   let elapsed=next-previous;
   if(market==='cn'&&a.minute<=690&&b.minute>=780)elapsed-=90*60;
+  if(market==='hk'&&a.minute<=720&&b.minute>=780)elapsed-=60*60;
   return elapsed>spans[period as keyof typeof spans]+1;
 }
 function append(record:ForecastRecord,type:JournalEventType,b:Candle,at:number,price:number,observedParent?:ForecastEvent['observedParent']) {
@@ -180,7 +181,7 @@ const number=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
 function validRecord(v:unknown):v is ForecastRecord {
   if(!object(v)||!object(v.outlook)||!Array.isArray(v.outlook.targets)||v.outlook.targets.length!==2||!Array.isArray(v.events))return false;
   if(v.audit!==undefined&&!validForecastAudit(v.audit))return false;
-  if(!['id','key','symbol','source','adjustment'].every(k=>typeof v[k]==='string')||!['crypto','cn','us','commodity'].includes(String(v.market))||!['1m','5m','15m','30m','1h','4h','1d','1w','1M'].includes(String(v.interval)))return false;
+  if(!['id','key','symbol','source','adjustment'].every(k=>typeof v[k]==='string')||!['crypto','cn','hk','us','commodity'].includes(String(v.market))||!['1m','5m','15m','30m','1h','4h','1d','1w','1M'].includes(String(v.interval)))return false;
   if(v.key!==[v.market,v.symbol,v.interval,v.source,v.adjustment].join('|'))return false;
   if(!['watching','condition-met','target2','invalidated','expired','missed','ambiguous','data-gap'].includes(String(v.status))||!['createdAt','referencePrice','referenceTime','lastBarTime','lastClose','barsObserved'].every(k=>number(v[k])&&(v[k] as number)>=0))return false;
   const p=v.outlook;if(!Array.isArray(p.targets)||p.status!=='ready'||!['long','short'].includes(String(p.side))||!['zoneLow','zoneHigh','triggerPrice','invalidationPrice'].every(k=>number(p[k])&&(p[k] as number)>0)||!p.targets.every(t=>object(t)&&number(t.price)&&t.price>0))return false;

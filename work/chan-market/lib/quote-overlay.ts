@@ -3,7 +3,7 @@ import {commodityBarEnd, commodityPeriodStart, commoditySessionStart, commodityT
 import {breakoutBarContinuity} from './breakout-vwap.ts';
 import type {Candle, Interval, MarketData} from './market-types';
 
-export type QuoteMarket = 'cn' | 'us' | 'commodity';
+export type QuoteMarket = 'cn' | 'hk' | 'us' | 'commodity';
 export type QuoteSession = 'pre' | 'regular' | 'post' | 'overnight';
 export type QuoteOhlcv = Pick<Candle, 'open'|'high'|'low'|'close'|'volume'>;
 export type QuoteQuality = 'observed' | 'realtime';
@@ -47,7 +47,7 @@ const record = (value:unknown):value is Record<string,unknown>=>value!==null && 
 const calendar = (period:Interval):period is '1d'|'1w'|'1M' => period==='1d'||period==='1w'||period==='1M';
 const dateAt = (utcDay:number)=>new Date(utcDay*1000).toISOString().slice(0,10);
 
-function exchangeEpoch(market:'cn'|'us', date:string, minute:number) {
+function exchangeEpoch(market:'cn'|'hk'|'us', date:string, minute:number) {
   // Noon UTC can be before US market open, but already has the correct local
   // DST offset on every regular trading date in both markets.
   const utcNoon = Date.parse(date+'T12:00:00Z')/1000;
@@ -90,7 +90,7 @@ export function usExtendedSessionInfo(timeSec: number): { session: QuoteSession;
   return { session: 'post', start: exchangeEpoch('us', date, regEnd), end: exchangeEpoch('us', date, 1200) };
 }
 
-function equityCalendarBounds(market:'cn'|'us', period:'1w'|'1M', date:string) {
+function equityCalendarBounds(market:'cn'|'hk'|'us', period:'1w'|'1M', date:string) {
   let first = Date.parse(date+'T00:00:00Z')/1000;
   let last:number;
   if(period==='1w'){
@@ -117,7 +117,7 @@ function equityCalendarBounds(market:'cn'|'us', period:'1w'|'1M', date:string) {
  * Each price must still come from the provider; a schedule alone supplies no data. */
 export function quotePeriodBounds(market:QuoteMarket, interval:Interval, time:number):{start:number;end:number}|null {
   if(!Number.isSafeInteger(time)||time<=0||time>253402300799)return null;
-  if(market!=='cn'&&market!=='us'&&market!=='commodity')return null;
+  if(market!=='cn'&&market!=='hk'&&market!=='us'&&market!=='commodity')return null;
   if(!calendar(interval)&&!Object.hasOwn(minuteSpans,interval))return null;
   if(market==='commodity'){
     const sessionStart=commoditySessionStart(time);
@@ -159,6 +159,7 @@ const chinaVenues:Record<string,string> = {SH:'XSHG',SZ:'XSHE',BJ:'BJSE'};
 const futuresRoots:Record<string,string> = {'GC=F':'GC','CL=F':'CL','SI=F':'SI'};
 function correctListing(market:QuoteMarket,symbol:string,q:Record<string,unknown>) {
   if(market==='cn')return /^\d{6}\.(SH|SZ|BJ)$/.test(symbol)&&chinaVenues[symbol.split('.')[1]]===q.venue;
+  if(market==='hk')return /^[A-Z0-9]{1,12}\.HK$/.test(symbol);
   if(market==='us')return true;
   const root=futuresRoots[symbol];
   return !!root && typeof q.contract==='string' && q.contract.startsWith(root) && /^[FGHJKMNQUVXZ]\d{1,4}$/.test(q.contract.slice(root.length));
@@ -172,6 +173,9 @@ function compatibleFeed(data:MarketData, q:Record<string,unknown>, bar:Record<st
     // Only the same raw regular-session vendor feed. An IEX-only feed has a
     // different open, high, low and volume than a consolidated chart.
     return vendor==='yahoo'&&data.source.startsWith('Yahoo Finance 网页行情 · ')&&raw&&!calendar(data.interval)&&!!bar;
+  }
+  if(market==='hk'){
+    return vendor==='yahoo'&&data.source.startsWith('Yahoo Finance 港股网页行情 · ')&&raw&&!calendar(data.interval)&&!!bar;
   }
   if(market==='commodity'){
     // Calendar series can span futures rolls; their alias does not establish
@@ -196,7 +200,7 @@ function continuesCumulativeBar(previous:QuoteOhlcv,next:QuoteOhlcv) {
 function chartCandle(data:MarketData,native:Candle,end:number):Candle|undefined {
   const {interval}=data, market=data.instrument.market, last=data.candles.at(-1);
   if(!last||market==='crypto')return;
-  const endStamped=market==='cn'&&!calendar(interval)&&interval!=='4h';
+  const endStamped=market==='cn'&&!/Longbridge/i.test(data.source)&&!calendar(interval)&&interval!=='4h';
   let stamp=endStamped?end:native.time;
   // Some equity calendar feeds label a period by its last trading day.
   if(market==='cn'&&calendar(interval)&&last.time>=native.time&&last.time<end)stamp=last.time;
@@ -236,6 +240,25 @@ export function selectQuoteOverlay(data:MarketData, input:unknown, nowMs=Date.no
       price,time,observedAt,venue,provider:'longbridge',
       quality:input.quality==='realtime'?'realtime':'observed',
       session,
+    };
+  }
+  if((market==='hk'||market==='cn')&&input.provider==='longbridge'){
+    if(input.session!=='regular')return null;
+    const nowSec=Math.floor(nowMs/1000);
+    const clock=equityExchangeClock(market,nowSec);
+    const daySession=equitySessionOn(market,clock.date);
+    if(daySession.status!=='open'||!daySession.segments.length)return null;
+    const firstOpen=daySession.segments[0].start;
+    const lastEnd=daySession.segments.at(-1)!.end;
+    if(clock.minute<firstOpen-15||clock.minute>lastEnd+10)return null;
+    const observedAt=finite(input.observedAt)&&Number.isSafeInteger(input.observedAt)?input.observedAt:time;
+    if(observedAt>nowSec+2||nowSec-observedAt>maxAgeSeconds)return null;
+    const dayStart=exchangeEpoch(market,clock.date,0);
+    if(time<dayStart-3600||time>nowSec+5)return null;
+    return {
+      price,time,observedAt,venue,provider:'longbridge',
+      quality:input.quality==='realtime'?'realtime':'observed',
+      session:'regular',
     };
   }
   if(time>nowMs/1000+2||nowMs/1000-time>maxAgeSeconds)return null;

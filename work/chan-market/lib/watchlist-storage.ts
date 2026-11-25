@@ -2,7 +2,7 @@ import type { Instrument } from './market-types';
 
 export const WATCHLIST_STORAGE_KEY = 'chan-watchlist-v1';
 
-const VALID_MARKETS = new Set(['crypto', 'us', 'cn', 'commodity']);
+const VALID_MARKETS = new Set(['crypto', 'us', 'hk', 'cn', 'commodity']);
 
 export function parseWatchlist(value: unknown): Instrument[] | null {
   if (!Array.isArray(value)) return null;

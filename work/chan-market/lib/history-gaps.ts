@@ -8,7 +8,7 @@ export function latestHistoryGap(data:MarketData) {
   const minutes={'1m':1,'5m':5,'15m':15,'30m':30,'1h':60,'4h':240,'1d':1440,'1w':10080,'1M':0};
   const {market}=data.instrument,step=minutes[data.interval]*60;
   if(!step||market!=='crypto'&&step>=86400)return;
-  const endLabel=market==='cn'||(market==='us'&&/东方财富|周期结束/.test(data.source));
+  const endLabel=(market==='cn'&&!/Longbridge/i.test(data.source))||((market==='us'||market==='hk')&&/东方财富|周期结束/.test(data.source));
   for(let i=data.candles.length-1;i>0;i--){
     const previous=data.candles[i-1],next=data.candles[i],diff=next.time-previous.time;
     if(previous.closed!==true||next.closed!==true||diff<=step||diff%step!==0)continue;

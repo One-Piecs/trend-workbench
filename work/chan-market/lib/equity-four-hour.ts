@@ -2,10 +2,11 @@ import type { Candle } from './market-types';
 import { equityExchangeClock, equityFourHourWindows, equitySessionOn, type SessionWindow } from './equity-calendar.ts';
 
 export interface EquityFourHourOptions {
-  market:'cn'|'us';
+  market:'cn'|'hk'|'us';
   sourceInterval:'30m'|'1h';
   timestamp:'start'|'end';
   now?:number;
+  delaySeconds?:number;
 }
 export interface EquityFourHourResult {
   candles:Candle[];
@@ -15,7 +16,7 @@ export interface EquityFourHourResult {
 }
 
 interface Bucket extends SessionWindow { slots:SessionWindow[]; rows:Map<number,Candle> }
-function scheduledBuckets(market:'cn'|'us',date:string,step:number):Bucket[] {
+function scheduledBuckets(market:'cn'|'hk'|'us',date:string,step:number):Bucket[] {
   const session=equitySessionOn(market,date);
   return equityFourHourWindows(market,date).map(window=>{
     const slots:SessionWindow[]=[];
@@ -35,7 +36,7 @@ export function aggregateEquityFourHour(input:Candle[],options:EquityFourHourOpt
   const {market,sourceInterval,timestamp}=options;
   const now=options.now??Date.now()/1000;
   const step=sourceInterval==='1h'?60:30;
-  const delay=market==='us'?900:120;
+  const delay=options.delaySeconds??(market==='cn'?120:900);
   const unique=[...new Map(input.map(row=>[row.time,row])).values()].sort((a,b)=>a.time-b.time);
   const sessions=new Map<string,{midnight:number;buckets:Bucket[]}>();
   let discardedBuckets=0,excludedRows=0,missingSessions=0;

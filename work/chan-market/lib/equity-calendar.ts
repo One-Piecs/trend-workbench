@@ -1,6 +1,6 @@
 import { equityCalendarData } from './equity-calendar-data.ts';
 
-type Market = 'us'|'cn';
+type Market = 'us'|'hk'|'cn';
 export interface SessionWindow { start:number; end:number }
 interface Session { status:'open'|'closed'|'unknown'; segments:readonly SessionWindow[] }
 const unknown:Session={status:'unknown',segments:[]};
@@ -25,7 +25,7 @@ export function equitySessionOn(market:Market,date:string):Session {
   return code==='0'?closed:{status:'open',segments:table.layouts[Number(code)]};
 }
 
-const clocks=Object.fromEntries(Object.entries({cn:'Asia/Shanghai',us:'America/New_York'}).map(([market,timeZone])=>
+const clocks=Object.fromEntries(Object.entries({cn:'Asia/Shanghai',hk:'Asia/Hong_Kong',us:'America/New_York'}).map(([market,timeZone])=>
   [market,new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'})]
 )) as Record<Market,Intl.DateTimeFormat>;
 

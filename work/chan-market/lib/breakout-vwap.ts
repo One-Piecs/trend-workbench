@@ -7,7 +7,7 @@ import type {Candle,Interval,Market} from './market-types.ts';
 
 const dayMs=86400000;
 const minutes={'1m':1,'5m':5,'15m':15,'30m':30,'1h':60} as const;
-type EquityMarket='cn'|'us';
+type EquityMarket='cn'|'hk'|'us';
 type Breakout=NonNullable<ReturnType<typeof priorCenterCrossing>>;
 export type VwapResult=
   |{status:'ready';anchor:number;crossing:Breakout;points:{index:number;value:number}[]}
@@ -40,7 +40,7 @@ export function breakoutBarContinuity(market:Market,interval:Interval,source:str
     if(interval==='4h')times.push(...equityFourHourWindows(market as EquityMarket,date).map(w=>w.start));
     else {
       const size=minutes[interval as keyof typeof minutes];
-      const endLabel=market==='cn'||/东方财富|Eastmoney|周期结束/i.test(source);
+      const endLabel=(market==='cn'&&!/Longbridge/i.test(source))||/东方财富|Eastmoney|周期结束/i.test(source);
       for(const segment of equitySessionOn(market as EquityMarket,date).segments){
         for(let m=segment.start;m<segment.end;m+=size)times.push(endLabel?Math.min(m+size,segment.end):m);
       }

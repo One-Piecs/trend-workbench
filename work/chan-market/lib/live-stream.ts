@@ -1,17 +1,28 @@
 import type { CryptoProvider } from './crypto-sources';
 import type { Candle, Interval, MarketData } from './market-types';
 
-export interface LiveTarget {
+export interface CryptoLiveTarget {
   provider: CryptoProvider;
   symbol: string;
   /** Subscription symbol in the venue's own WebSocket notation. */
   pair: string;
   interval: Interval;
 }
+export interface LongbridgeLiveTarget {
+  provider: 'longbridge';
+  market: 'us' | 'hk' | 'cn';
+  symbol: string;
+  pair: string;
+  interval: Interval;
+  source: string;
+}
+export type LiveTarget = CryptoLiveTarget | LongbridgeLiveTarget;
 export type LiveStatus = 'connecting' | 'live' | 'fallback';
 type Callbacks = {
   /** Full cumulative bar, plus publication time in ms (receipt time if omitted by the venue). */
   onCandle(candle: Candle, eventTimeMs: number): void;
+  onQuote?(quote: unknown, eventTimeMs: number): void;
+  onHeartbeat?(eventTimeMs: number): void;
   onStatus(status: LiveStatus): void;
 };
 const providers = { Binance:'binance', OKX:'okx', Kraken:'kraken', Bitget:'bitget', Bybit:'bybit' } as const;
@@ -22,9 +33,16 @@ const candleChannels: Record<Interval, string> = {
 const bybitPeriods: Record<Interval, string> = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D','1w':'W','1M':'M' };
 const krakenAlias = (currency: string) => currency === 'BTC' ? 'XBT' : currency === 'DOGE' ? 'XDG' : currency;
 
-/** Only subscribe to the exact public spot history returned by the REST adapter. */
+/** Only subscribe to the exact public spot history returned by the REST adapter, or Longbridge Hub stream. */
 export function getLiveTarget({ instrument, interval, source }: Pick<MarketData, 'instrument'|'interval'|'source'>): LiveTarget | null {
   const { symbol, currency, exchange } = instrument;
+  if ((instrument.market === 'us' || instrument.market === 'hk' || instrument.market === 'cn')
+    && instrument.id === `${instrument.market}:${symbol}`
+    && Object.hasOwn(minutes, interval)
+    && source.startsWith('Longbridge ')
+    && !source.includes('聚合4小时')) {
+    return { provider: 'longbridge', market: instrument.market, symbol, pair: symbol, interval, source };
+  }
   if (instrument.market !== 'crypto' || instrument.id !== 'crypto:'+symbol || !Object.hasOwn(providers, exchange)
     || !Object.hasOwn(minutes, interval) || !/^[A-Z0-9]{4,30}$/.test(symbol) || !/^[A-Z0-9]+$/.test(currency)
     || !symbol.endsWith(currency) || symbol.length <= currency.length) return null;
@@ -39,7 +57,7 @@ export function getLiveTarget({ instrument, interval, source }: Pick<MarketData,
   return sourceIds.some(id => source === exchange+' 公共现货行情 · '+id) ? {provider, symbol, pair, interval} : null;
 }
 
-function streamConfig({ provider, pair, interval }: LiveTarget) {
+function streamConfig({ provider, pair, interval }: CryptoLiveTarget) {
   const channel = 'candle'+candleChannels[interval];
   switch (provider) {
     case 'binance': return {url:'wss://data-stream.binance.vision/ws/'+pair.toLowerCase()+'@kline_'+interval};
@@ -58,6 +76,7 @@ function numeric(value: unknown): number {
 }
 
 export function decodeLiveCandles(target: LiveTarget, message: unknown, receivedAt = Date.now()) {
+  if (target.provider === 'longbridge') return [];
   const {provider, interval, pair} = target;
   const msg = record(message);
   const result: { candle:Candle; eventTimeMs:number }[] = [];
@@ -113,8 +132,116 @@ export function decodeLiveCandles(target: LiveTarget, message: unknown, received
   return result;
 }
 
+function subscribeLongbridgeSse(
+  target: LongbridgeLiveTarget,
+  callbacks: Callbacks,
+  openEventSource = (url: string) => new EventSource(url),
+): () => void {
+  const url = '/api/live-stream?' + new URLSearchParams({
+    market: target.market,
+    symbol: target.symbol,
+    interval: target.interval,
+    source: target.source,
+  }).toString();
+  let source: EventSource | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined, retry: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false, attempts = 0, status: LiveStatus | undefined;
+
+  function notify(next: LiveStatus) {
+    if (!stopped && next !== status) {
+      status = next;
+      callbacks.onStatus(next);
+    }
+  }
+  function disconnect() {
+    clearTimeout(deadline);
+    if (!source) return;
+    source.onerror = null;
+    source.close();
+    source = undefined;
+  }
+  function reconnect() {
+    disconnect();
+    if (stopped) return;
+    notify('fallback');
+    retry = setTimeout(connect, Math.min(30000, 2000 * 2 ** Math.min(attempts++, 4)));
+  }
+  function armWatchdog(ms: number) {
+    clearTimeout(deadline);
+    deadline = setTimeout(reconnect, ms);
+  }
+  function connect() {
+    if (stopped) return;
+    try { source = openEventSource(url); } catch { reconnect(); return; }
+    const current = source;
+    armWatchdog(15000);
+    current.addEventListener('status', (rawEvent: Event) => {
+      if (current !== source) return;
+      const data = (rawEvent as MessageEvent).data;
+      if (typeof data !== 'string') return;
+      let parsed: Record<string, unknown>;
+      try { parsed = record(JSON.parse(data)); } catch { return; }
+      if (parsed.status === 'live') {
+        attempts = 0;
+        armWatchdog(45000);
+        callbacks.onHeartbeat?.(typeof parsed.time === 'number' ? parsed.time : Date.now());
+        notify('live');
+      } else if (parsed.status === 'fallback') {
+        notify('fallback');
+      }
+    });
+    current.addEventListener('candle', (rawEvent: Event) => {
+      if (current !== source) return;
+      const data = (rawEvent as MessageEvent).data;
+      if (typeof data !== 'string') return;
+      let parsed: Record<string, unknown>;
+      try { parsed = record(JSON.parse(data)); } catch { return; }
+      const c = record(parsed.candle);
+      const time = numeric(c.time), open = numeric(c.open), high = numeric(c.high), low = numeric(c.low), close = numeric(c.close), volume = numeric(c.volume);
+      if (!Number.isSafeInteger(time) || time <= 0 || ![open, high, low, close, volume].every(Number.isFinite) || low <= 0 || volume < 0) return;
+      const candle: Candle = {
+        time, open, high, low, close, volume,
+        closed: c.closed === true,
+        ...(typeof c.session === 'string' && ['pre', 'regular', 'post', 'overnight'].includes(c.session)
+          ? { session: c.session as Candle['session'] } : {}),
+      };
+      const eventTimeMs = Number.isFinite(Number(parsed.eventTimeMs)) ? Number(parsed.eventTimeMs) : Date.now();
+      attempts = 0;
+      armWatchdog(45000);
+      callbacks.onHeartbeat?.(eventTimeMs);
+      notify('live');
+      callbacks.onCandle(candle, eventTimeMs);
+    });
+    current.addEventListener('quote', (rawEvent: Event) => {
+      if (current !== source) return;
+      const data = (rawEvent as MessageEvent).data;
+      if (typeof data !== 'string') return;
+      let parsed: Record<string, unknown>;
+      try { parsed = record(JSON.parse(data)); } catch { return; }
+      const eventTimeMs = Number.isFinite(Number(parsed.eventTimeMs)) ? Number(parsed.eventTimeMs) : Date.now();
+      attempts = 0;
+      armWatchdog(45000);
+      callbacks.onHeartbeat?.(eventTimeMs);
+      notify('live');
+      callbacks.onQuote?.(parsed.quote, eventTimeMs);
+    });
+    current.onerror = () => { if (current === source) reconnect(); };
+  }
+  notify('connecting');
+  connect();
+  return () => { stopped = true; clearTimeout(retry); disconnect(); };
+}
+
 /** One subscription, including reconnects. Unsubscribe releases even a pending handshake. */
-export function subscribeLiveCandles(target: LiveTarget, callbacks: Callbacks, openSocket = (url: string) => new WebSocket(url)): () => void {
+export function subscribeLiveCandles(
+  target: LiveTarget,
+  callbacks: Callbacks,
+  openSocket = (url: string) => new WebSocket(url),
+  openEventSource?: (url: string) => EventSource,
+): () => void {
+  if (target.provider === 'longbridge') {
+    return subscribeLongbridgeSse(target, callbacks, openEventSource);
+  }
   const {url, request, ping} = streamConfig(target);
   let socket: WebSocket | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined, retry: ReturnType<typeof setTimeout> | undefined;

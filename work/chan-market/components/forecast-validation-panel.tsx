@@ -6,7 +6,7 @@ import type {CacheBacktestResult} from '@/lib/cache-backtest';
 import type {Instrument,Interval,Market} from '@/lib/market-types';
 import {forecastPeriod} from './forecast-copy';
 
-const marketNames={crypto:['加密货币','Crypto'],us:['美股','US equities'],cn:['A股','A-shares'],commodity:['大宗商品','Commodities']} as const;
+const marketNames={crypto:['加密货币','Crypto'],us:['美股','US equities'],hk:['港股','HK equities'],cn:['A股','A-shares'],commodity:['大宗商品','Commodities']} as const;
 
 export interface CachedSeriesEntry {
   key:string;

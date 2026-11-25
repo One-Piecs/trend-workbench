@@ -28,10 +28,11 @@ export function createMinuteExitResolver(primary:MarketData,minute?:MarketData) 
     if(start%60!==0||end%60!==0||end<=start||end-start>31*86400)return {resolution:'unsupported-period'};
     let localStart=0,endLabel=false;
     if(market==='commodity'&&(!commoditySessionOpen(start)||!commoditySessionOpen(end-1)))return {resolution:'unsupported-period'};
-    if(market==='cn'||market==='us') {
+    if(market==='cn'||market==='hk'||market==='us') {
       const source=minute.source;
-      endLabel=market==='cn'?/^(东方财富|腾讯证券|新浪财经)/.test(source):/^(东方财富|Eastmoney)/i.test(source);
-      if(!endLabel&&!(market==='us'&&/^Yahoo Finance/i.test(source)))return {resolution:'unsupported-period'};
+      const isLongbridge=/^Longbridge/i.test(source);
+      endLabel=!isLongbridge&&(market==='cn'?/^(东方财富|腾讯证券|新浪财经)/.test(source):/^(东方财富|Eastmoney)/i.test(source));
+      if(!endLabel&&!(isLongbridge||(market==='us'||market==='hk')&&/^Yahoo Finance/i.test(source)))return {resolution:'unsupported-period'};
       const clock=exchangeClock(start,market),day=new Date(clock.date+'T00:00:00Z').getUTCDay();
       localStart=clock.minute;
       if(day===0||day===6||localStart<570||localStart+(end-start)/60>(market==='cn'?900:960))return {resolution:'unsupported-period'};
@@ -42,6 +43,7 @@ export function createMinuteExitResolver(primary:MarketData,minute?:MarketData) 
     for(let t=start;t<end;t+=60) {
       const local=localStart+(t-start)/60;
       if(market==='cn'&&local>=690&&local<780)continue;
+      if(market==='hk'&&local>=720&&local<780)continue;
       const b=byTime.get(t+(endLabel?60:0)),availableAt=t+60+delay;
       if(!b||!b.closed||!Number.isFinite(capture)||availableAt>capture
         ||![b.open,b.high,b.low,b.close].every(n=>Number.isFinite(n)&&n>0)

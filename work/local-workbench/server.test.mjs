@@ -18,12 +18,15 @@ export const getJournalMinutes=async()=>({});
 export const getSpotFlow=async()=>({});
 export const getBattleTape=async()=>({});
 export const searchInstruments=async()=>({results:[]});
-export const parseMarket=v=>{if(['crypto','us','cn','commodity'].includes(v))return v;throw new MarketError('Invalid market',400);};
+export const parseMarket=v=>{if(['crypto','us','hk','cn','commodity'].includes(v))return v;throw new MarketError('Invalid market',400);};
 export const parseSearchMarket=v=>v||'all';
 export const parseInterval=v=>v;
 export const normalizeSymbol=(_m,s)=>String(s).trim().toUpperCase();
 export const latestHistoryGap=()=>null;
 export const resetMarketNetworkFailures=()=>{};
+export const getLongbridgeHubCapabilities=async()=>({configured:false,ready:false,status:'unconfigured',usRealtime:false,hkRealtime:false,cnRealtime:false,packages:[]});
+export const isLongbridgeHubConfigured=()=>false;
+export const toLongbridgeTicker=(_m,s)=>s;
 `;
 const networkStub=`export function createNetworkRouteMonitor(){return async()=>({revision:1,status:{mode:'direct',applied:true}});}
 `;
@@ -86,6 +89,7 @@ async function stageServer(){
   const dir=await mkdtemp(join(tmpdir(),'trend-server-'));
   await mkdir(join(dir,'public'),{recursive:true});
   await copyFile(join(here,'server.mjs'),join(dir,'server.mjs'));
+  await copyFile(join(here,'longbridge-hub-stream.mjs'),join(dir,'longbridge-hub-stream.mjs'));
   await copyFile(join(here,'backtest-worker.mjs'),join(dir,'backtest-worker.mjs'));
   await writeFile(join(dir,'cache-backtest.mjs'),backtestStub);
   await writeFile(join(dir,'market-data.mjs'),marketStub);
@@ -99,7 +103,7 @@ async function stageServer(){
 async function startServer(dir,{args=[],env={}}={}){
   const child=spawn(process.execPath,[join(dir,'server.mjs'),'--port','0','--announce-ready',...args],{
     cwd:dir,
-    env:{...process.env,TREND_WORKBENCH_LONGBRIDGE_KLINE:'0',NODE_USE_ENV_PROXY:'0',...env},
+    env:{...process.env,TREND_WORKBENCH_LONGBRIDGE_KLINE:'0',TREND_WORKBENCH_LONGBRIDGE_HUB:'0',NODE_USE_ENV_PROXY:'0',...env},
     stdio:['ignore','pipe','pipe'],
   });
   let stdout='',stderr='';

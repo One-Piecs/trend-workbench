@@ -57,6 +57,7 @@ export function evaluateRelativeVolume(candles: Candle[], context?: ConfluenceCo
 function provider(source: string): string {
   const value = source.replace(/\s*·\s*真实同源聚合\s*$/i, '').replace(/\s*·\s*(?:30分(?:钟)?|1小时)聚合4小时\s*$/i, '').trim().toLowerCase();
   if (/^yahoo finance/.test(value)) return 'yahoo-finance';
+  if (/^longbridge/.test(value)) return 'longbridge';
   if (/^腾讯证券/.test(value)) return 'tencent';
   if (/^东方财富/.test(value)) return 'eastmoney';
   if (/^新浪财经/.test(value)) return 'sina';
@@ -74,11 +75,11 @@ function adjustmentKind(value: string): string | null {
 
 // Missing exchange holidays can conservatively withhold an old observation;
 // they must never make a future completed candle available in a replay.
-function elapsedTradingMinutes(from: number, to: number, market: 'cn' | 'us'): number {
+function elapsedTradingMinutes(from: number, to: number, market: 'cn' | 'hk' | 'us'): number {
   const start = exchangeClock(from, market), end = exchangeClock(to, market);
   const a = Date.parse(`${start.date}T00:00:00Z`), b = Date.parse(`${end.date}T00:00:00Z`);
   if (b < a || b - a > 370 * 86400000) return Infinity;
-  const sessions = market === 'cn' ? [[570,690],[780,900]] : [[570,960]];
+  const sessions = market === 'cn' ? [[570,690],[780,900]] : market === 'hk' ? [[570,720],[780,960]] : [[570,960]];
   let total = 0;
   for (let d = a; d <= b; d += 86400000) {
     const weekday = new Date(d).getUTCDay();

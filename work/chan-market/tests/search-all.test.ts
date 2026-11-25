@@ -42,9 +42,15 @@ test('global search finds an unpreset A-share by Chinese name, pinyin and qualif
       assert.equal(hits[0].market,'cn');
       assert.equal(hits[0].exchange,'上交所');
       assert.equal(hits[0].currency,'CNY');
-      assert.ok(result.results.every(row=>row.market==='cn'));
+      const codeQuery=/^(?:sh)?603993/i.test(q);
+      assert.ok(result.results.every(row=>codeQuery ? row.market==='cn' : (row.market==='cn'||row.market==='hk')));
+      if (!codeQuery) {
+        assert.ok(result.results.some(row=>row.symbol==='03993.HK'&&row.market==='hk'));
+      }
       if (!['lymy','luoyangmuye'].includes(q)) assert.equal(result.results[0].symbol,'603993.SH');
     }
+    const cnOnly=await searchInstruments('cn','洛阳钼业');
+    assert.ok(cnOnly.results.every(row=>row.market==='cn'));
     assert.ok(queries.includes('lymy'));
     assert.ok(queries.includes('luoyangmuye'));
     assert.equal(queries.filter(q=>q==='603993').length,3);

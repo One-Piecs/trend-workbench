@@ -18,6 +18,20 @@ import { commoditySessionOpen } from './commodity-session.ts';
 import { getChinaLiveQuote } from './cn-live-quote.ts';
 import { getLicensedLiveQuote } from './licensed-live-quote.ts';
 import { usExtendedSessionInfo, type QuoteSession } from './quote-overlay.ts';
+import {
+  fetchHubCandles,
+  fetchHubHistory,
+  fetchHubQuotes,
+  fetchHubStatic,
+  getLongbridgeHubCapabilities,
+  HubHttpError,
+  isLongbridgeHubConfigured,
+  resetLongbridgeHubState,
+  toLongbridgeTicker,
+  type HubNormalizedCandlestick,
+  type HubNormalizedQuote,
+} from './longbridge-hub.ts';
+export { getLongbridgeHubCapabilities, isLongbridgeHubConfigured, toLongbridgeTicker };
 
 /** Read-only market data for the selected instrument. */
 export class MarketError extends Error {
@@ -30,6 +44,7 @@ const ALL_INTERVALS: Interval[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '
 export const AVAILABLE_INTERVALS: Record<Market, Interval[]> = {
   crypto: ALL_INTERVALS,
   us: ALL_INTERVALS,
+  hk: ALL_INTERVALS,
   cn: ALL_INTERVALS,
   commodity: ALL_INTERVALS,
 };
@@ -47,6 +62,10 @@ let longbridgeUnavailableUntil = 0;
 let longbridgeHistoryUnavailableUntil = 0;
 let longbridgeHistoryUnsupportedUntil = 0;
 let longbridgeQuoteUnavailableUntil = 0;
+let longbridgeHubKlineUnavailableUntil = 0;
+let longbridgeHubHistoryUnavailableUntil = 0;
+let longbridgeHubHistoryUnsupportedUntil = 0;
+let longbridgeHubQuoteUnavailableUntil = 0;
 interface LongbridgeExtendedSubQuote { last?: unknown; timestamp?: unknown }
 interface LongbridgeQuotePayload {
   symbol?: unknown;
@@ -57,9 +76,11 @@ interface LongbridgeQuotePayload {
   overnight?: LongbridgeExtendedSubQuote;
 }
 const longbridgeQuoteCache = new Map<string, { expires: number; row: LongbridgeQuotePayload | null }>();
+const longbridgeHubStaticCache = new Map<string, { name: string; exchange: string }>();
 /** A network-route change (sleep/wake, VPN switch) re-arms every provider cooldown, not only crypto. */
 export function resetMarketNetworkFailures() {
   resetCryptoSources();
+  resetLongbridgeHubState();
   yahooUnavailableUntil = 0;
   yahooSearchUnavailableUntil = 0;
   cnEastmoneyUnavailableUntil = 0;
@@ -67,6 +88,10 @@ export function resetMarketNetworkFailures() {
   longbridgeHistoryUnavailableUntil = 0;
   longbridgeHistoryUnsupportedUntil = 0;
   longbridgeQuoteUnavailableUntil = 0;
+  longbridgeHubKlineUnavailableUntil = 0;
+  longbridgeHubHistoryUnavailableUntil = 0;
+  longbridgeHubHistoryUnsupportedUntil = 0;
+  longbridgeHubQuoteUnavailableUntil = 0;
   longbridgeQuoteCache.clear();
 }
 const cache = new Map<string, { expires: number; value: Promise<unknown> }>();
@@ -103,12 +128,13 @@ function instrument(market: Market, symbol: string, name: string, exchange: stri
 const popularRows: Record<Exclude<Market,'commodity'>, [string, string, string, string][]> = {
   crypto: [['BTCUSDT','比特币 Bitcoin','Binance','USDT'],['ETHUSDT','以太坊 Ethereum','Binance','USDT'],['SOLUSDT','Solana','Binance','USDT'],['BNBUSDT','BNB','Binance','USDT'],['XRPUSDT','XRP','Binance','USDT'],['DOGEUSDT','Dogecoin','Binance','USDT'],['ADAUSDT','Cardano','Binance','USDT'],['AVAXUSDT','Avalanche','Binance','USDT'],['LINKUSDT','Chainlink','Binance','USDT'],['SUIUSDT','Sui','Binance','USDT'],['LTCUSDT','Litecoin','Binance','USDT'],['DOTUSDT','Polkadot','Binance','USDT']],
   us: [['AAPL','苹果 Apple','NASDAQ','USD'],['MSFT','微软 Microsoft','NASDAQ','USD'],['NVDA','英伟达 NVIDIA','NASDAQ','USD'],['TSLA','特斯拉 Tesla','NASDAQ','USD'],['AMZN','亚马逊 Amazon','NASDAQ','USD'],['GOOGL','谷歌 Alphabet','NASDAQ','USD'],['META','Meta Platforms','NASDAQ','USD'],['AMD','AMD','NASDAQ','USD'],['COIN','Coinbase','NASDAQ','USD'],['MSTR','Strategy','NASDAQ','USD'],['SPY','标普500 ETF','NYSE Arca','USD'],['QQQ','纳斯达克100 ETF','NASDAQ','USD']],
+  hk: [['00700.HK','腾讯控股 tengxunkonggu txkg','港交所','HKD'],['09988.HK','阿里巴巴-W alibaba albb','港交所','HKD'],['03690.HK','美团-W meituan mt','港交所','HKD'],['01810.HK','小米集团-W xiaomijituan xmjt','港交所','HKD'],['09618.HK','京东集团-SW jingdongjituan jd','港交所','HKD'],['09888.HK','百度集团-SW baidujituan bd','港交所','HKD'],['01211.HK','比亚迪股份 biyadigufen byd','港交所','HKD'],['00941.HK','中国移动 zhongguoyidong zgyd','港交所','HKD'],['00005.HK','汇丰控股 huifengkonggu hfkg','港交所','HKD'],['00388.HK','香港交易所 xianggangjiaoyisuo gj','港交所','HKD'],['00981.HK','中芯国际 zhongxinguoji zxgj','港交所','HKD'],['02800.HK','盈富基金 yingfujijin yfjj','港交所','HKD']],
   cn: [['600519.SH','贵州茅台 guizhoumaotai gzmt','上交所','CNY'],['300750.SZ','宁德时代 ningdeshidai ndsd','深交所','CNY'],['002594.SZ','比亚迪 biyadi byd','深交所','CNY'],['000001.SZ','平安银行 pinganyinhang payh','深交所','CNY'],['600036.SH','招商银行 zhaoshangyinhang zsyh','上交所','CNY'],['601318.SH','中国平安 zhongguopingan zgpa','上交所','CNY'],['600900.SH','长江电力 changjiangdianli cjdl','上交所','CNY'],['000858.SZ','五粮液 wuliangye wly','深交所','CNY'],['000333.SZ','美的集团 meidijituan mdjt','深交所','CNY'],['688981.SH','中芯国际 zhongxinguoji zxgj','上交所','CNY'],['300059.SZ','东方财富 dongfangcaifu dfcf','深交所','CNY'],['920599.BJ','同力股份 tongligufen tlgf','北交所','CNY']],
 };
 function popular(market: Market, q: string): Instrument[] {
   if (market === 'commodity') return searchCommodities(q);
   const key = q.toLowerCase().replace(/[\s/]/g, '');
-  return popularRows[market].filter(row => !key || row.slice(0,2).join('').toLowerCase().replace(/\s/g, '').includes(key)).map(row => instrument(market, row[0], market === 'cn' ? row[1].split(' ')[0] : row[1], row[2], row[3]));
+  return popularRows[market].filter(row => !key || row.slice(0,2).join('').toLowerCase().replace(/\s/g, '').includes(key)).map(row => instrument(market, row[0], (market === 'cn' || market === 'hk') ? row[1].split(' ')[0] : row[1], row[2], row[3]));
 }
 function unique(rows: Instrument[]): Instrument[] {
   const found = new Map<string, Instrument>();
@@ -117,13 +143,13 @@ function unique(rows: Instrument[]): Instrument[] {
 }
 export type SearchMarket = Market | 'all';
 interface SearchResult { results: Instrument[]; warning?: string }
-const SEARCH_MARKETS: Market[] = ['crypto', 'commodity', 'us', 'cn'];
-const MARKET_NAMES: Record<Market, string> = { crypto: '加密货币', commodity:'大宗商品', us: '美股', cn: 'A股' };
+const SEARCH_MARKETS: Market[] = ['crypto', 'commodity', 'us', 'cn', 'hk'];
+const MARKET_NAMES: Record<Market, string> = { crypto: '加密货币', commodity:'大宗商品', us: '美股', hk: '港股', cn: 'A股' };
 export function parseSearchMarket(value: string | null): SearchMarket {
   return !value || value === 'all' ? 'all' : parseMarket(value);
 }
 export function parseMarket(value: string | null): Market {
-  if (value === 'crypto' || value === 'us' || value === 'cn' || value === 'commodity') return value;
+  if (value === 'crypto' || value === 'us' || value === 'hk' || value === 'cn' || value === 'commodity') return value;
   throw new MarketError('请选择有效的市场。', 400);
 }
 export function parseInterval(value: string | null, market: Market): Interval {
@@ -146,6 +172,13 @@ export function normalizeSymbol(market: Market, input: string): string {
   if (market === 'us') {
     if (!/^[A-Z^][A-Z0-9.^-]{0,19}$/.test(value) || /\.(SS|SZ|HK|L|TO|AX|DE|PA|T)$/.test(value)) throw new MarketError('请输入美股代码，例如 AAPL、BRK-B。', 400);
     return value.replace(/\./g, '-');
+  }
+  if (market === 'hk') {
+    const numMatch = value.match(/^(?:HK)?(\d{1,5})(?:\.HK)?$/);
+    if (numMatch) return `${numMatch[1].padStart(5, '0')}.HK`;
+    const alphaMatch = value.match(/^([A-Z][A-Z0-9]{1,11})(?:\.HK)?$/);
+    if (alphaMatch) return `${alphaMatch[1]}.HK`;
+    throw new MarketError('请输入港股代码，例如 00700.HK、700。', 400);
   }
   const match = value.match(/^(?:(SH|SZ|BJ))?(\d{6})(?:\.(SH|SZ|BJ|SS))?$/);
   if (!match || (match[1] && match[3] && match[1] !== match[3])) throw new MarketError('请输入六位A股代码，或 600519.SH、000001.SZ、920599.BJ。', 400);
@@ -175,25 +208,85 @@ export async function getWorkbenchLiveQuote(params:URLSearchParams, nowMs = Date
     const clock=equityExchangeClock(market,seconds);
     regularOpen=equitySessionOn(market,clock.date).segments.some(s=>clock.minute>=s.start&&clock.minute<s.end);
   }
-  const lbEnabled=market==='us'&&longbridgeOvernightEnabled()&&!symbol.startsWith('^');
-  const extended=lbEnabled?usExtendedSessionInfo(seconds):null;
+  const hub=await getLongbridgeHubCapabilities();
+  const lbCliEnabled=market==='us'&&longbridgeOvernightEnabled()&&!symbol.startsWith('^');
+  const lbHubEnabled=hub.ready&&(
+    (market==='us'&&hub.usRealtime&&!symbol.startsWith('^'))
+    ||(market==='hk'&&hub.hkRealtime)
+    ||(market==='cn'&&hub.cnRealtime&&!symbol.endsWith('.BJ'))
+  );
+  const extended=market==='us'&&(lbCliEnabled||lbHubEnabled)?usExtendedSessionInfo(seconds):null;
   const identity={market,symbol,interval};
   if(!regularOpen&&!extended)return {...identity,status:'closed'};
   const key=JSON.stringify(['live-quote',market,symbol,interval,source,adjustment,contract]);
   return cached(key,3000,async()=>{
     if(market==='cn'){
+      if(lbHubEnabled&&longbridgeHubQuoteUnavailableUntil<=Date.now()){
+        const ticker=toLongbridgeTicker('cn',symbol);
+        if(ticker){
+          try{
+            const {quotes}=await fetchHubQuotes([ticker]);
+            const hubResult=parseLongbridgeHubRegularQuote('cn',symbol,quotes[0],nowMs);
+            if(hubResult.status==='quote')return {...identity,...hubResult};
+          }catch(error){
+            if(error instanceof HubHttpError&&error.status===429)longbridgeHubQuoteUnavailableUntil=Date.now()+30_000;
+            else if(!(error instanceof HubHttpError)||error.status!==404)longbridgeHubQuoteUnavailableUntil=Date.now()+60_000;
+          }
+        }
+      }
       const quote=await getChinaLiveQuote(symbol,fetch,nowMs,{interval,source,adjustment});
       return quote?{...identity,status:'quote',quote}:{...identity,status:'stale'};
     }
-    if(market==='us'&&lbEnabled&&extended&&(source.startsWith('Longbridge ')||!regularOpen)){
+    if(market==='hk'){
+      if(!lbHubEnabled)return {...identity,status:'unconfigured'};
+      if(longbridgeHubQuoteUnavailableUntil>Date.now())return {...identity,status:'unavailable'};
+      const ticker=toLongbridgeTicker('hk',symbol);
+      if(!ticker)return {...identity,status:'unavailable'};
+      try{
+        const {quotes}=await fetchHubQuotes([ticker]);
+        return {...identity,...parseLongbridgeHubRegularQuote('hk',symbol,quotes[0],nowMs)};
+      }catch(error){
+        if(error instanceof HubHttpError&&error.status===429)longbridgeHubQuoteUnavailableUntil=Date.now()+30_000;
+        else if(!(error instanceof HubHttpError)||error.status!==404)longbridgeHubQuoteUnavailableUntil=Date.now()+60_000;
+        return {...identity,status:'unavailable'};
+      }
+    }
+    if(market==='us'&&lbHubEnabled&&extended&&(source.startsWith('Longbridge ')||!regularOpen)){
+      if(longbridgeHubQuoteUnavailableUntil<=Date.now()){
+        const ticker=toLongbridgeTicker('us',symbol);
+        if(ticker){
+          try{
+            const {quotes}=await fetchHubQuotes([ticker]);
+            const hubResult=parseLongbridgeLiveQuote(symbol,quotes[0]?toLongbridgeQuotePayload(quotes[0]):null,nowMs);
+            if(hubResult.status==='quote'||(!regularOpen&&!lbCliEnabled))return {...identity,...hubResult};
+          }catch(error){
+            if(error instanceof HubHttpError&&error.status===429)longbridgeHubQuoteUnavailableUntil=Date.now()+30_000;
+            else if(!(error instanceof HubHttpError)||error.status!==404)longbridgeHubQuoteUnavailableUntil=Date.now()+60_000;
+          }
+        }
+      }
+    }
+    if(market==='us'&&lbCliEnabled&&extended&&(source.startsWith('Longbridge ')||!regularOpen)){
       const lbResult=parseLongbridgeLiveQuote(symbol,await fetchLongbridgeQuoteRow(symbol),nowMs);
       if(lbResult.status==='quote'||!regularOpen)return {...identity,...lbResult};
       return {...identity,...await getLicensedLiveQuote(market,symbol,interval,{contract,nowMs})};
     }
     const licensed=await getLicensedLiveQuote(market,symbol,interval,{contract,nowMs});
-    if(market==='us'&&licensed.status!=='quote'&&lbEnabled&&extended){
-      const lbResult=parseLongbridgeLiveQuote(symbol,await fetchLongbridgeQuoteRow(symbol),nowMs);
-      if(lbResult.status==='quote')return {...identity,...lbResult};
+    if(market==='us'&&licensed.status!=='quote'&&extended){
+      if(lbHubEnabled&&longbridgeHubQuoteUnavailableUntil<=Date.now()){
+        const ticker=toLongbridgeTicker('us',symbol);
+        if(ticker){
+          try{
+            const {quotes}=await fetchHubQuotes([ticker]);
+            const hubResult=parseLongbridgeLiveQuote(symbol,quotes[0]?toLongbridgeQuotePayload(quotes[0]):null,nowMs);
+            if(hubResult.status==='quote')return {...identity,...hubResult};
+          }catch{/* fallback below */}
+        }
+      }
+      if(lbCliEnabled){
+        const lbResult=parseLongbridgeLiveQuote(symbol,await fetchLongbridgeQuoteRow(symbol),nowMs);
+        if(lbResult.status==='quote')return {...identity,...lbResult};
+      }
     }
     return {...identity,...licensed};
   });
@@ -226,19 +319,39 @@ export async function getOlderHistory(params:URLSearchParams) {
   const venue=aggregate?source.slice(0,source.lastIndexOf(' · ')):source;
   const sinaWindow=market==='cn'&&venue==='新浪财经 OHLC（独立备用） · quotes.sina.cn';
   const count=Math.min(2000,aggregate?limit*(child==='1h'?4:8)+8:limit);
-  if(!aggregate&&market==='us'&&venue===LONGBRIDGE_SOURCE){
+  const expectedLbSource=market==='us'?LONGBRIDGE_SOURCE:market==='hk'?LONGBRIDGE_HK_SOURCE:LONGBRIDGE_CN_SOURCE;
+  const isLongbridgeVenue=(market==='us'||market==='hk'||market==='cn')&&venue===expectedLbSource;
+  if(isLongbridgeVenue){
     if(adjustment!==LONGBRIDGE_ADJUSTMENT)throw new MarketError('历史行情的标的、周期、来源或复权口径与当前图表不一致。');
-    const page=await longbridgeUsHistory(symbol,child,before,limit);
-    return response(page.status,page.candles);
+    const hub=await getLongbridgeHubCapabilities();
+    const canUseHub=hub.ready&&((market==='us'&&hub.usRealtime&&!symbol.startsWith('^'))||(market==='hk'&&hub.hkRealtime)||(market==='cn'&&hub.cnRealtime&&!symbol.endsWith('.BJ')));
+    if(canUseHub){
+      const page=await longbridgeHubHistory(market,symbol,child,before,count,{session:aggregate?'intraday':undefined});
+      if(!aggregate)return response(page.status,page.candles.slice(-limit));
+      if(page.status!=='more')return response(page.status);
+      const agg=aggregateEquityFourHour(page.candles,{market,sourceInterval:child as '1h'|'30m',timestamp:'start',delaySeconds:0});
+      const candles=agg.candles.filter(c=>c.time<before&&c.closed!==false).slice(-limit);
+      return candles.length?response('more',candles):response('end');
+    }
+    if(market==='cn'&&hub.configured&&!hub.cnRealtime)return response('unsupported');
+    if(!aggregate&&market==='us'&&venue===LONGBRIDGE_SOURCE){
+      const page=await longbridgeUsHistory(symbol,child,before,limit);
+      return response(page.status,page.candles);
+    }
+    return response('unsupported');
   }
   let data:MarketData;
   const isYahoo=(market==='commodity'&&/^Yahoo Finance 期货行情 · query[12]\.finance\.yahoo\.com$/.test(venue))||
-    (market==='us'&&/^Yahoo Finance 网页行情 · query[12]\.finance\.yahoo\.com$/.test(venue));
+    (market==='us'&&/^Yahoo Finance 网页行情 · query[12]\.finance\.yahoo\.com$/.test(venue))||
+    (market==='hk'&&/^Yahoo Finance 港股网页行情 · query[12]\.finance\.yahoo\.com$/.test(venue));
   if(isYahoo){
+    const yahooTicker=market==='hk'?hkYahooSymbol(symbol):symbol;
     const window=yahooHistoryWindow(venue,child,before,count,now)!;
     if(window.start>=before)return response('end');
     try{
-      data=market==='commodity'?await getCommodityCandles(symbol,interval,limit,fetch,Date.now(),window):await yahooCandles(symbol,child,count,window);
+      data=market==='commodity'?await getCommodityCandles(symbol,interval,limit,fetch,Date.now(),window)
+        :market==='hk'?await hkYahooCandles(symbol,child,count,window,yahooTicker)
+        :await yahooCandles(symbol,child,count,window);
     }catch(error){
       if(error instanceof HistoryBoundary)return response(error.status);
       throw error;
@@ -246,13 +359,14 @@ export async function getOlderHistory(params:URLSearchParams) {
   }else{
     if(market==='commodity')return response('unsupported');
     const calendar=isCalendarBar(child);
-    const zone=market==='cn'||!calendar?'Asia/Shanghai':'America/New_York';
+    const zone=(market==='cn'||market==='hk'||!calendar)?'Asia/Shanghai':'America/New_York';
     const endDate=localClock(before,zone).date;
     // Date-based feeds include all bars from the cursor date. Fetch enough
     // overlap even when the requested output page is a single bar.
     const padding=calendar?2:Math.ceil(390/MINUTES[child as Exclude<Interval,'1M'>])+2;
     if(market==='cn'&&venue==='东方财富 网页行情 · push2his.eastmoney.com')data=await cnEastmoneyCandles(symbol,child,count+padding,endDate);
     else if(market==='us'&&venue==='东方财富 美股网页行情（备用） · push2his.eastmoney.com')data=await usEastmoneyCandles(symbol,child,count+padding,endDate);
+    else if(market==='hk'&&venue==='东方财富 港股网页行情 · push2his.eastmoney.com')data=await hkEastmoneyCandles(symbol,child,count+padding,endDate);
     else if(market==='cn'&&calendar&&venue==='腾讯证券 K线（独立备用） · ifzq.gtimg.cn')data=await cnTencentCandles(symbol,child,Math.min(640,count+padding),endDate);
     else if(market==='us'&&(child==='1w'||child==='1M')&&venue===`腾讯证券 原生美股${child==='1w'?'周':'月'}K · ifzq.gtimg.cn`)data=await usTencentCalendar(symbol,child,Math.min(640,count+padding),endDate);
     else if(sinaWindow)data=await cached(`sina-archive:${symbol}:${child}`,60000,()=>cnSinaCandles(symbol,child,limit,true));
@@ -284,7 +398,7 @@ function usDateStamp(date: string): number {
   const clock = localClock(guess,'America/New_York');
   return guess + (570-clock.hour*60-clock.minute)*60;
 }
-async function tencentHints(q: string, market: 'gp'|'us'): Promise<string[][]> {
+async function tencentHints(q: string, market: 'gp'|'hk'|'us'): Promise<string[][]> {
   const text = await upstream(`https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(q)}&t=${market}`,'gbk');
   const body = text.match(/v_hint\s*=\s*"([\s\S]*?)"/)?.[1];
   if (body === undefined) throw new MarketError('在线标的搜索暂不可用。');
@@ -302,11 +416,11 @@ async function usHints(q: string) {
   return cached(`tencent-us:${q.toUpperCase()}`, 30*60000, async () => (await tencentHints(q.replace(/-/g,'.'),'us')).map(usHint).filter((x): x is NonNullable<typeof x> => !!x));
 }
 /** Calendar bars close conservatively. Monthly bars are confirmed only after local month-end. */
-export function stockBarClosed(time: number, interval: Interval, market: 'cn' | 'us', now = Date.now() / 1000, sessionEnd?: number, source = ''): boolean {
+export function stockBarClosed(time: number, interval: Interval, market: 'cn' | 'hk' | 'us', now = Date.now() / 1000, sessionEnd?: number, source = ''): boolean {
   if (!Number.isFinite(time) || !Number.isFinite(now)) return false;
   let available=candleAvailableAt({time},market,interval,source);
-  if(market==='us'&&!isCalendarBar(interval)&&sessionEnd&&sessionEnd>time&&
-    equityExchangeClock('us',sessionEnd).date===equityExchangeClock('us',time).date){
+  if((market==='us'||market==='hk')&&!isCalendarBar(interval)&&sessionEnd&&sessionEnd>time&&
+    equityExchangeClock(market,sessionEnd).date===equityExchangeClock(market,time).date){
     available=Math.min(available,sessionEnd+candleDelaySeconds(market,interval,source));
   }
   return now>=available;
@@ -317,8 +431,9 @@ function searchRank(row: Instrument, query: string): number {
   const symbol = row.symbol.toLowerCase(), name = row.name.toLowerCase();
   if (row.name.startsWith('代码查询 ')) return -1;
   if (symbol === key || row.market === 'cn' && symbol.split('.')[0] === key) return 100;
-  if (row.market === 'cn') {
-    try { if (normalizeSymbol('cn', query) === row.symbol) return 100; } catch { /* A name or pinyin query. */ }
+  if (row.market === 'hk' && (symbol.split('.')[0] === key || symbol.split('.')[0].replace(/^0+/, '') === key.replace(/^0+/, ''))) return 100;
+  if (row.market === 'cn' || row.market === 'hk') {
+    try { if (normalizeSymbol(row.market, query) === row.symbol) return 100; } catch { /* A name or pinyin query. */ }
   }
   if (name.replace(/\s/g, '') === key || name.split(/\s+/).includes(key)) return 90;
   if (row.market === 'crypto' && symbol === key + row.currency.toLowerCase()) return 85;
@@ -385,6 +500,20 @@ async function searchSingleMarket(market: Market, query: string): Promise<Search
           return {results:unique([...rows,...local]),warning:'Yahoo搜索暂不可用，已切换腾讯美股搜索；支持范围取决于备用源收录。'};
         }
       }
+      if (market === 'hk') {
+        if (/^(?:SH|SZ|BJ)?\d{6}(?:\.(?:SH|SZ|BJ|SS))?$/i.test(q)) return { results: [] };
+        const directCode = /^(?:HK)?\d{1,5}(?:\.HK)?$/i.test(q) ? normalizeSymbol('hk', q) : undefined;
+        const rows = (await tencentHints(directCode ? directCode.slice(0, 5) : q, 'hk'))
+          .filter(x => x[0] === 'hk' && /^[A-Z0-9]{1,12}$/i.test(x[1] ?? ''))
+          .map(x => {
+            const sym = /^\d+$/.test(x[1]) ? `${x[1].padStart(5, '0')}.HK` : `${x[1].toUpperCase()}.HK`;
+            return instrument('hk', sym, x[2] || sym, '港交所', 'HKD');
+          });
+        if (directCode && !rows.some(r => r.symbol === directCode)) {
+          rows.push(instrument('hk', directCode, `代码查询 ${directCode}`, '港交所', 'HKD'));
+        }
+        return { results: unique([...rows, ...local]) };
+      }
       const directCode = /^(?:(SH|SZ|BJ))?\d{6}(?:\.(SH|SZ|BJ|SS))?$/i.test(q) ? normalizeSymbol('cn',q) : undefined;
       const rows = (await tencentHints(directCode ? directCode.slice(0,6) : q,'gp')).filter(x=>['sh','sz','bj'].includes(x[0]) && /^\d{6}$/.test(x[1])).map(x=>instrument('cn',`${x[1]}.${x[0].toUpperCase()}`,x[2], x[0]==='sh'?'上交所':x[0]==='bj'?'北交所':'深交所','CNY'));
       // Search by an exact code is still useful when the hint service does not index a new listing.
@@ -398,6 +527,7 @@ async function searchSingleMarket(market: Market, query: string): Promise<Search
     const results = [...local];
     try {
       if (market === 'cn' && /\d{6}/.test(q)) { const symbol = normalizeSymbol(market,q); results.push(instrument(market,symbol,`代码查询 ${symbol}`,symbol.endsWith('SH')?'上交所':symbol.endsWith('BJ')?'北交所':'深交所','CNY')); }
+      if (market === 'hk' && /^(?:HK)?\d{1,5}(?:\.HK)?$/i.test(q)) { const symbol = normalizeSymbol('hk',q); results.push(instrument('hk',symbol,`代码查询 ${symbol}`,'港交所','HKD')); }
       if (market === 'us' && /^[A-Za-z^][A-Za-z0-9.^-]{0,19}$/.test(q)) { const symbol = normalizeSymbol(market,q); results.push(instrument(market,symbol,`代码查询 ${symbol}`,'待行情源确认','USD')); }
     } catch { /* Invalid direct symbol is not exposed. */ }
     return { results: unique(results), warning: '在线搜索暂时不可用；仅显示匹配的常用标的或待行情核验的代码。' };
@@ -418,47 +548,77 @@ export async function getCandles(market: Market, rawSymbol: string, interval: In
       : market === 'commodity' ? await getCommodityCandles(symbol,interval,limit)
       : interval === '4h' ? await equityFourHourCandles(market,symbol,limit)
       : market === 'us' ? await usCandles(symbol,interval,limit)
+      : market === 'hk' ? await hkCandles(symbol,interval,limit)
       : await cnCandles(symbol,interval,limit);
     return withHistoryCoverage(data,limit);
   });
 }
-async function equityFourHourCandles(market: 'cn' | 'us', symbol: string, limit: number): Promise<MarketData> {
+async function equityFourHourCandles(market: 'cn' | 'hk' | 'us', symbol: string, limit: number): Promise<MarketData> {
   // Fetch extra children before aggregation; the public result still respects
   // the requested limit. Every candidate is an independent, unmixed source.
-  const sourceLimit = Math.min(8200, limit * (market === 'cn' ? 4 : 7) + 16);
-  const candidates: (() => Promise<MarketData>)[] = market === 'cn'
-    // The same 1,023-bar source window covers twice as many sessions at 60m.
-    // Keep fallbacks independent so a short Eastmoney response cannot hide a
-    // deeper Tencent response. All candidates remain genuine session OHLC.
-    ? [() => cnSinaCandles(symbol,'1h',sourceLimit), () => cnEastmoneyCandles(symbol,'1h',sourceLimit), () => cnTencentCandles(symbol,'1h',sourceLimit)]
-    : [
-      ...(yahooUnavailableUntil > Date.now() ? [] : [async () => {
-        try { return await yahooCandles(symbol,'1h',sourceLimit); }
-        catch (error) {
-          if (error instanceof MarketError && [403,429].includes(error.upstreamStatus || 0)) yahooUnavailableUntil = Date.now() + 5*60000;
-          throw error;
-        }
-      }]),
-      () => usEastmoneyCandles(symbol,'30m',sourceLimit),
-    ];
+  const sourceLimit = Math.min(8200, limit * (market === 'cn' ? 4 : market === 'hk' ? 10 : 7) + 16);
+  const hub = await getLongbridgeHubCapabilities();
+  const useHub = hub.ready && longbridgeHubKlineUnavailableUntil <= Date.now() && (
+    (market === 'us' && hub.usRealtime && !symbol.startsWith('^'))
+    || (market === 'hk' && hub.hkRealtime)
+    || (market === 'cn' && hub.cnRealtime && !symbol.endsWith('.BJ'))
+  );
+  const hubChild: '1h' | '30m' = market === 'hk' ? '30m' : '1h';
+  const fourHourRule = market === 'cn'
+    ? 'A股4小时按09:30–11:30、13:00–15:00累计4个交易小时，每个交易日一根，午休不计入。'
+    : market === 'hk'
+      ? '港股4小时按香港正常交易时段聚合：09:30–12:00、13:00–14:30累计4小时，14:30–16:00尾段为1.5小时，分别保留；半日市按实际时段聚合。'
+      : '美股4小时按纽约正常交易时段聚合：09:30–13:30为4小时，13:30–16:00尾段为2.5小时，分别保留；不跨交易日，自动处理夏令时。';
+  const fourHourZone = market === 'us' ? 'America/New_York' : market === 'hk' ? 'Asia/Hong_Kong' : 'Asia/Shanghai';
   let lastError: unknown;
   const aggregate = async (candidate: () => Promise<MarketData>): Promise<MarketData | undefined> => {
     try {
       const data = await candidate();
-      const result = aggregateEquityFourHour(data.candles, { market, sourceInterval: data.interval as '30m'|'1h', timestamp: data.source.startsWith('Yahoo') ? 'start' : 'end' });
+      const isStartSource = data.source.startsWith('Yahoo') || data.source.startsWith('Longbridge ');
+      const isLongbridge = data.source.startsWith('Longbridge ');
+      const result = aggregateEquityFourHour(data.candles, {
+        market,
+        sourceInterval: data.interval as '30m'|'1h',
+        timestamp: isStartSource ? 'start' : 'end',
+        delaySeconds: isLongbridge ? 0 : undefined,
+      });
       const candles = ensure(result.candles,1).slice(-limit);
       const childPeriod = data.interval === '1h' ? '1小时' : '30分钟';
-      const rule = market === 'cn'
-        ? 'A股4小时按09:30–11:30、13:00–15:00累计4个交易小时，每个交易日一根，午休不计入。'
-        : '美股4小时按纽约正常交易时段聚合：09:30–13:30为4小时，13:30–16:00尾段为2.5小时，分别保留；不跨交易日，自动处理夏令时。';
-      const warnings = data.warnings.filter(w => !/本次仅返回|仅有\d+根|备用源返回\d+根|东方财富连接失败|分钟K线保留源|免费分钟K线历史窗口有限/.test(w));
-      warnings.push(rule, '聚合K线标记周期起点；仅使用同一来源真实子K线，全部子K收盘且覆盖完整后才确认，未完成尾部不参与收盘信号。');
-      if (market === 'us') warnings.push('遇交易所提前收市，按当日实际交易时段聚合；缺少子K线的历史区间会跳过。');
+      const warnings = data.warnings.filter(w => !/本次仅返回|仅有\d+根|备用源返回\d+根|东方财富连接失败|分钟K线保留源|免费分钟K线历史窗口有限|受单次最多1000根限制/.test(w));
+      warnings.push(fourHourRule, '聚合K线标记周期起点；仅使用同一来源真实子K线，全部子K收盘且覆盖完整后才确认，未完成尾部不参与收盘信号。');
+      if (market === 'us' || market === 'hk') warnings.push('遇交易所提前收市，按当日实际交易时段聚合；缺少子K线的历史区间会跳过。');
       if (result.discardedBuckets) warnings.push(`已跳过${result.discardedBuckets}个覆盖不完整的历史区间或缺口区间。`);
       if (candles.length < 200) warnings.push(`4小时有效K线仅${candles.length}根，受来源分钟历史窗口限制，统计样本可能不足。`);
-      return { ...data, interval: '4h', candles, source: `${data.source} · ${childPeriod}聚合4小时`, delayNotice: `${data.delayNotice.split(' · ')[0]} · ${market === 'cn' ? 'Asia/Shanghai' : 'America/New_York'} · 聚合K线为周期起点`, warnings, availableIntervals: AVAILABLE_INTERVALS[market] };
+      return { ...data, interval: '4h', candles, source: `${data.source} · ${childPeriod}聚合4小时`, delayNotice: `${data.delayNotice.split(' · ')[0]} · ${fourHourZone} · 聚合K线为周期起点`, warnings, availableIntervals: AVAILABLE_INTERVALS[market] };
     } catch (error) { lastError = error; return undefined; }
   };
+  if (useHub) {
+    const hubFourHour = await aggregate(() => longbridgeHubCandles(market, symbol, hubChild, Math.min(1000, sourceLimit), { session: 'intraday' }));
+    if (hubFourHour) return hubFourHour;
+  }
+  const candidates: (() => Promise<MarketData>)[] = market === 'cn'
+    ? [() => cnSinaCandles(symbol,'1h',sourceLimit), () => cnEastmoneyCandles(symbol,'1h',sourceLimit), () => cnTencentCandles(symbol,'1h',sourceLimit)]
+    : market === 'hk'
+      ? [
+        ...(yahooUnavailableUntil > Date.now() ? [] : [async () => {
+          try { return await hkYahooCandles(symbol,'30m',sourceLimit); }
+          catch (error) {
+            if (error instanceof MarketError && [403,429].includes(error.upstreamStatus || 0)) yahooUnavailableUntil = Date.now() + 5*60000;
+            throw error;
+          }
+        }]),
+        () => hkEastmoneyCandles(symbol,'30m',sourceLimit),
+      ]
+      : [
+        ...(yahooUnavailableUntil > Date.now() ? [] : [async () => {
+          try { return await yahooCandles(symbol,'1h',sourceLimit); }
+          catch (error) {
+            if (error instanceof MarketError && [403,429].includes(error.upstreamStatus || 0)) yahooUnavailableUntil = Date.now() + 5*60000;
+            throw error;
+          }
+        }]),
+        () => usEastmoneyCandles(symbol,'30m',sourceLimit),
+      ];
   // A non-empty response is not necessarily enough history. Compare available
   // complete feeds; freshness wins over depth and sources are never spliced.
   const alternatives = await Promise.all(candidates.map(aggregate));
@@ -486,12 +646,15 @@ export function longbridgeOvernightEnabled(): boolean {
   return process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE === '1';
 }
 const LONGBRIDGE_PERIODS: Partial<Record<Interval, string>> = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h' };
+const LONGBRIDGE_HUB_PERIODS: Partial<Record<Interval, string>> = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '1d': '1d', '1w': '1w', '1M': '1M' };
 const LONGBRIDGE_SESSIONS = new Set(['Intraday', 'Pre', 'Post', 'Overnight']);
 const LONGBRIDGE_SESSION_LABELS: Record<string, Candle['session']> = { Intraday: 'regular', Pre: 'pre', Post: 'post', Overnight: 'overnight' };
-const LONGBRIDGE_EXCHANGES: Record<string, string> = { NASD: 'NASDAQ', NYSE: 'NYSE', AMEX: 'NYSE American' };
+const LONGBRIDGE_EXCHANGES: Record<string, string> = { NASD: 'NASDAQ', NYSE: 'NYSE', AMEX: 'NYSE American', HKEX: '港交所', SEHK: '港交所', XHKG: '港交所', SH: '上交所', SSE: '上交所', XSHG: '上交所', SZ: '深交所', SZSE: '深交所', XSHE: '深交所' };
 const LONGBRIDGE_SOURCE = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+const LONGBRIDGE_HK_SOURCE = 'Longbridge OpenAPI 港股行情 · open.longbridge.com';
+const LONGBRIDGE_CN_SOURCE = 'Longbridge OpenAPI A股实时行情 · open.longbridge.com';
 const LONGBRIDGE_ADJUSTMENT = '不复权（原始价格）；成交量单位：股';
-const LONGBRIDGE_HISTORY_DAYS: Partial<Record<Interval, number>> = { '1m': 3, '5m': 5, '15m': 14, '30m': 28, '1h': 60 };
+const LONGBRIDGE_HISTORY_DAYS: Partial<Record<Interval, number>> = { '1m': 3, '5m': 5, '15m': 14, '30m': 28, '1h': 60, '1d': 730, '1w': 1825, '1M': 3650 };
 function shiftDate(date: string, deltaDays: number): string {
   const day = new Date(`${date}T00:00:00Z`);
   day.setUTCDate(day.getUTCDate() + deltaDays);
@@ -676,6 +839,228 @@ export function parseLongbridgeLiveQuote(symbol: string, row: LongbridgeQuotePay
     quote: { market: 'us', symbol, currency: 'USD', time: tradeTime, observedAt: nowSec, price, venue: 'Longbridge OpenAPI', provider: 'longbridge', quality: 'realtime', session: active.session },
   };
 }
+function toLongbridgeQuotePayload(row: HubNormalizedQuote): LongbridgeQuotePayload {
+  return {
+    symbol: row.symbol,
+    last: row.lastDone,
+    status: row.tradeStatus,
+    pre_market: row.preMarketQuote ? { last: row.preMarketQuote.lastDone, timestamp: row.preMarketQuote.timestamp } : undefined,
+    post_market: row.postMarketQuote ? { last: row.postMarketQuote.lastDone, timestamp: row.postMarketQuote.timestamp } : undefined,
+    overnight: row.overnightQuote ? { last: row.overnightQuote.lastDone, timestamp: row.overnightQuote.timestamp } : undefined,
+  };
+}
+export function parseLongbridgeHubRegularQuote(
+  market: 'hk' | 'cn',
+  symbol: string,
+  row: HubNormalizedQuote | null | undefined,
+  nowMs = Date.now(),
+):
+  | { status: 'closed' | 'stale' | 'unavailable' }
+  | { status: 'quote'; quote: { market: 'hk' | 'cn'; symbol: string; currency: 'HKD' | 'CNY'; time: number; observedAt: number; price: number; venue: 'Longbridge OpenAPI'; provider: 'longbridge'; quality: 'realtime'; session: 'regular' } } {
+  const nowSec = Math.floor(nowMs / 1000);
+  const clock = equityExchangeClock(market, nowSec);
+  const session = equitySessionOn(market, clock.date);
+  if (session.status !== 'open' || !session.segments.length) return { status: 'closed' };
+  const firstOpen = session.segments[0].start;
+  const lastEnd = session.segments.at(-1)!.end;
+  if (clock.minute < firstOpen - 15 || clock.minute > lastEnd + 10) return { status: 'closed' };
+  if (!row) return { status: 'unavailable' };
+  if (typeof row.tradeStatus === 'string' && row.tradeStatus && !/normal/i.test(row.tradeStatus)) return { status: 'unavailable' };
+  const price = Number(row.lastDone);
+  const quoteTime = Number.isSafeInteger(row.time) && row.time > 0 ? row.time : nowSec;
+  if (!Number.isFinite(price) || price <= 0) return { status: 'unavailable' };
+  return {
+    status: 'quote',
+    quote: {
+      market,
+      symbol,
+      currency: market === 'cn' ? 'CNY' : 'HKD',
+      time: quoteTime,
+      observedAt: nowSec,
+      price,
+      venue: 'Longbridge OpenAPI',
+      provider: 'longbridge',
+      quality: 'realtime',
+      session: 'regular',
+    },
+  };
+}
+function hubErrorToMarketError(err: HubHttpError, market: 'us' | 'hk' | 'cn'): MarketError {
+  const label = market === 'hk' ? '港股' : market === 'cn' ? 'A股' : '美股';
+  if (err.upstreamCode === 301600 || err.upstreamCode === 301603 || err.status === 404) {
+    return new MarketError(`Longbridge 未收录该${label}标的或暂无行情（${err.message}）。`, 404, err.status, err.upstreamCode);
+  }
+  if (err.upstreamCode === 301604) return new MarketError(`Longbridge 行情权限不足（${err.message}）。`, 503, err.status, err.upstreamCode);
+  if (err.upstreamCode === 301606 || err.status === 429) return new MarketError('Longbridge 行情源限流，请稍后重试。', 429, 429, err.upstreamCode);
+  if (err.upstreamCode === 301607) return new MarketError(`Longbridge 历史K线额度不足（${err.message}）。`, 503, err.status, err.upstreamCode);
+  return new MarketError(`Longbridge 行情源暂不可用：${err.message.slice(0, 120)}`, err.status >= 400 ? err.status : 502, err.status, err.upstreamCode);
+}
+export function parseLongbridgeHubCandles(
+  rows: HubNormalizedCandlestick[],
+  market: 'us' | 'hk' | 'cn',
+  interval: Interval,
+  source: string,
+  now = Date.now() / 1000,
+): { candles: Candle[]; sessions: Record<string, number> } {
+  const sessions: Record<string, number> = {};
+  const list: Candle[] = [];
+  const calendar = isCalendarBar(interval);
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const session = typeof row.session === 'string' && LONGBRIDGE_SESSIONS.has(row.session) ? row.session : null;
+    if (!session) throw new MarketError('Longbridge 返回未识别的交易时段，未将该段行情用于结构分析。');
+    const time = Number(row.time);
+    if (!Number.isSafeInteger(time) || time <= 0 || (!calendar && time % 60 !== 0)) continue;
+    sessions[session] = (sessions[session] ?? 0) + 1;
+    list.push({
+      time,
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume),
+      closed: stockBarClosed(time, interval, market, now, undefined, source),
+      ...(market === 'us' && !calendar ? { session: LONGBRIDGE_SESSION_LABELS[session] } : {}),
+    });
+  }
+  return { candles: sanitizeCandles(list), sessions };
+}
+async function longbridgeHubStaticInfo(market: 'us' | 'hk' | 'cn', symbol: string): Promise<{ name: string; exchange: string } | undefined> {
+  const cacheKey = `${market}:${symbol.toUpperCase()}`;
+  const hit = longbridgeHubStaticCache.get(cacheKey);
+  if (hit) return hit;
+  const ticker = toLongbridgeTicker(market, symbol);
+  if (!ticker) return undefined;
+  try {
+    const { items } = await fetchHubStatic([ticker]);
+    const row = items[0];
+    if (!row) return undefined;
+    const name = market === 'cn'
+      ? (row.nameCn || row.nameEn || symbol).trim()
+      : market === 'hk'
+        ? (row.nameCn || row.nameHk || row.nameEn || symbol).trim()
+        : (row.nameEn || row.nameCn || symbol).trim();
+    const defaultEx = market === 'hk' ? '港交所' : market === 'cn' ? (symbol.endsWith('.SH') ? '上交所' : '深交所') : 'US';
+    const rawEx = typeof row.exchange === 'string' ? row.exchange.trim() : '';
+    const exchange = LONGBRIDGE_EXCHANGES[rawEx] ?? (rawEx || defaultEx);
+    const info = { name: name || symbol, exchange };
+    longbridgeHubStaticCache.set(cacheKey, info);
+    return info;
+  } catch { return undefined; }
+}
+async function longbridgeHubCandles(
+  market: 'us' | 'hk' | 'cn',
+  symbol: string,
+  interval: Interval,
+  limit: number,
+  options?: { session?: 'all' | 'intraday' },
+): Promise<MarketData> {
+  const period = LONGBRIDGE_HUB_PERIODS[interval];
+  const ticker = toLongbridgeTicker(market, symbol);
+  if (!period || !ticker) throw new MarketError('Longbridge Hub 不支持该标的或周期。', 400);
+  if (longbridgeHubKlineUnavailableUntil > Date.now()) throw new MarketError('Longbridge Hub 行情源暂时不可用。', 503);
+  const count = Math.min(1000, limit);
+  const session: 'all' | 'intraday' = options?.session ?? (market === 'us' && !isCalendarBar(interval) ? 'all' : 'intraday');
+  const source = market === 'us' ? LONGBRIDGE_SOURCE : market === 'hk' ? LONGBRIDGE_HK_SOURCE : LONGBRIDGE_CN_SOURCE;
+  let now = Date.now() / 1000;
+  let parsed: { candles: Candle[]; sessions: Record<string, number> };
+  try {
+    const res = await fetchHubCandles({ ticker, period, count, adjust: 'none', session });
+    now = Date.now() / 1000;
+    parsed = parseLongbridgeHubCandles(res.candles, market, interval, source, now);
+  } catch (err) {
+    const mapped = err instanceof HubHttpError ? hubErrorToMarketError(err, market) : err instanceof MarketError ? err : new MarketError('Longbridge Hub 行情源返回格式异常。');
+    if (mapped.status !== 404) longbridgeHubKlineUnavailableUntil = Date.now() + 2 * 60_000;
+    throw mapped;
+  }
+  const candles = ensure(parsed.candles, 1).slice(-count);
+  const info = await longbridgeHubStaticInfo(market, symbol);
+  const defaultCurrency = market === 'hk' ? 'HKD' : market === 'cn' ? 'CNY' : 'USD';
+  const defaultExchange = market === 'hk' ? '港交所' : market === 'cn' ? (symbol.endsWith('.SH') ? '上交所' : '深交所') : 'US';
+  const fallbackName = popular(market, symbol).find(x => x.symbol === symbol)?.name ?? symbol;
+  let warnings: string[];
+  let delayNotice: string;
+  if (market === 'us') {
+    if (session === 'all') {
+      warnings = [
+        '已使用Longbridge官方行情，包含美股盘前、盘后及夜盘时段；夜盘成交稀薄，结构信号请结合正常时段确认。',
+        'K线为周期起点时间；按实时行情在周期结束时确认收盘，未完成K线不参与收盘信号。',
+        `本段含盘前${parsed.sessions.Pre ?? 0}根、盘后${parsed.sessions.Post ?? 0}根、夜盘${parsed.sessions.Overnight ?? 0}根K线。`,
+      ];
+      if (candles.length >= count) warnings.push('受单次最多1000根限制，纳入夜盘后覆盖的交易日更少，可与不含夜盘的来源对照。');
+    } else {
+      warnings = [
+        '已使用Longbridge官方行情；K线为周期起点时间，按实时行情在周期结束时确认收盘，未完成K线不参与收盘信号。',
+      ];
+    }
+    delayNotice = 'Longbridge实时行情 · America/New_York · 含盘前/盘后/夜盘 · K线为周期起点';
+  } else if (market === 'hk') {
+    warnings = ['已使用Longbridge官方港股实时行情；K线为周期起点时间，按实时行情在周期结束时确认收盘。'];
+    delayNotice = 'Longbridge实时行情 · Asia/Hong_Kong · 仅交易时段 · K线为周期起点';
+  } else {
+    warnings = [
+      '已使用Longbridge官方A股实时行情；K线为周期起点时间，按实时行情在周期结束时确认收盘。',
+      'A股展示看多/看空倾向；看空信号不代表该标的可以直接卖空。',
+    ];
+    delayNotice = 'Longbridge实时行情 · Asia/Shanghai · 仅交易时段 · K线为周期起点';
+  }
+  if (candles.length < 200) warnings.push(`行情源本次仅返回${candles.length}根K线，统计样本可能不足。`);
+  return {
+    instrument: instrument(market, symbol, info?.name ?? fallbackName, info?.exchange ?? defaultExchange, defaultCurrency),
+    interval,
+    candles,
+    source,
+    asOf: new Date(now * 1000).toISOString(),
+    delayNotice,
+    adjustment: LONGBRIDGE_ADJUSTMENT,
+    warnings,
+    availableIntervals: AVAILABLE_INTERVALS[market],
+  };
+}
+async function longbridgeHubHistory(
+  market: 'us' | 'hk' | 'cn',
+  symbol: string,
+  interval: Interval,
+  before: number,
+  limit: number,
+  options?: { session?: 'all' | 'intraday' },
+): Promise<{ candles: Candle[]; status: 'more' | 'end' | 'unsupported' }> {
+  const period = LONGBRIDGE_HUB_PERIODS[interval];
+  const windowDays = LONGBRIDGE_HISTORY_DAYS[interval];
+  const ticker = toLongbridgeTicker(market, symbol);
+  if (!period || !windowDays || !ticker) return { candles: [], status: 'unsupported' };
+  if (longbridgeHubHistoryUnsupportedUntil > Date.now()) return { candles: [], status: 'unsupported' };
+  if (longbridgeHubHistoryUnavailableUntil > Date.now()) throw new MarketError('Longbridge 历史K线接口暂时不可用。', 503);
+  const source = market === 'us' ? LONGBRIDGE_SOURCE : market === 'hk' ? LONGBRIDGE_HK_SOURCE : LONGBRIDGE_CN_SOURCE;
+  const session: 'all' | 'intraday' = options?.session ?? (market === 'us' && !isCalendarBar(interval) ? 'all' : 'intraday');
+  const zone = market === 'us' ? 'America/New_York' : market === 'hk' ? 'Asia/Hong_Kong' : 'Asia/Shanghai';
+  let endDate = localClock(before - 1, zone).date;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const startDate = shiftDate(endDate, -(windowDays - 1));
+    let parsed: { candles: Candle[]; sessions: Record<string, number> };
+    try {
+      const res = await fetchHubHistory({ ticker, period, adjust: 'none', session, mode: 'date', start: startDate, end: endDate, priority: 'low' });
+      const now = Date.now() / 1000;
+      parsed = parseLongbridgeHubCandles(res.candles, market, interval, source, now);
+    } catch (err) {
+      if (err instanceof HubHttpError) {
+        if (err.upstreamCode === 301604 || (err.upstreamCode === 301607 && /limit:\s*0\b/i.test(err.message))) {
+          longbridgeHubHistoryUnsupportedUntil = Date.now() + 6 * 3600_000;
+          return { candles: [], status: 'unsupported' };
+        }
+        if (err.upstreamCode === 301607) longbridgeHubHistoryUnavailableUntil = Date.now() + 60 * 60_000;
+        else if (err.status !== 404) longbridgeHubHistoryUnavailableUntil = Date.now() + 5 * 60_000;
+        throw hubErrorToMarketError(err, market);
+      }
+      longbridgeHubHistoryUnavailableUntil = Date.now() + 5 * 60_000;
+      throw err instanceof MarketError ? err : new MarketError('Longbridge Hub 行情源返回格式异常。');
+    }
+    const eligible = parsed.candles.filter(c => c.time < before && c.closed !== false);
+    if (eligible.length > 0) return { candles: eligible.slice(-limit), status: 'more' };
+    endDate = parsed.candles.length > 0 ? shiftDate(endDate, -1) : shiftDate(startDate, -1);
+  }
+  return { candles: [], status: 'end' };
+}
 async function longbridgeUsCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
   const period = LONGBRIDGE_PERIODS[interval];
   if (!period || !longbridgeOvernightEnabled()) throw new MarketError('Longbridge 夜盘行情源未启用或不支持该周期。', 503);
@@ -748,6 +1133,13 @@ async function longbridgeUsHistory(symbol: string, interval: Interval, before: n
   return { candles: [], status: 'end' };
 }
 async function usCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
+  const hub = await getLongbridgeHubCapabilities();
+  const canUseHub = hub.ready && hub.usRealtime && !symbol.startsWith('^') && LONGBRIDGE_HUB_PERIODS[interval] !== undefined && longbridgeHubKlineUnavailableUntil <= Date.now();
+  let hubError: unknown;
+  if (canUseHub) {
+    try { return await longbridgeHubCandles('us', symbol, interval, limit); }
+    catch (error) { hubError = error; }
+  }
   const calendar = interval === '1M' || interval === '1w';
   // Only Longbridge carries overnight sessions; every other provider stays regular-session-only.
   const overnight = !calendar && LONGBRIDGE_PERIODS[interval] !== undefined && longbridgeOvernightEnabled();
@@ -765,7 +1157,43 @@ async function usCandles(symbol: string, interval: Interval, limit: number): Pro
     }]),
     () => usEastmoneyCandles(symbol,interval,limit),
   ];
-  return selectStockHistory(candidates);
+  try { return await selectStockHistory(candidates); }
+  catch (error) {
+    if (hubError instanceof MarketError && (!(error instanceof MarketError) || (hubError.status === 404 && error.status !== 404))) throw hubError;
+    throw error;
+  }
+}
+function hkYahooSymbol(symbol: string): string {
+  const stem = symbol.replace(/\.HK$/i, '');
+  if (/^\d+$/.test(stem)) {
+    const num = stem.replace(/^0+/, '') || '0';
+    return `${num.padStart(4, '0')}.HK`;
+  }
+  return symbol;
+}
+async function hkCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
+  const hub = await getLongbridgeHubCapabilities();
+  const canUseHub = hub.ready && hub.hkRealtime && LONGBRIDGE_HUB_PERIODS[interval] !== undefined && longbridgeHubKlineUnavailableUntil <= Date.now();
+  let hubError: unknown;
+  if (canUseHub) {
+    try { return await longbridgeHubCandles('hk', symbol, interval, limit); }
+    catch (error) { hubError = error; }
+  }
+  const candidates: (() => Promise<MarketData>)[] = [
+    ...(yahooUnavailableUntil > Date.now() ? [] : [async () => {
+      try { return await hkYahooCandles(symbol, interval, limit); }
+      catch (error) {
+        if (error instanceof MarketError && [403, 429].includes(error.upstreamStatus || 0)) yahooUnavailableUntil = Date.now() + 5 * 60000;
+        throw error;
+      }
+    }]),
+    () => hkEastmoneyCandles(symbol, interval, limit),
+  ];
+  try { return await selectStockHistory(candidates); }
+  catch (error) {
+    if (hubError instanceof MarketError && (!(error instanceof MarketError) || (hubError.status === 404 && error.status !== 404))) throw hubError;
+    throw error;
+  }
 }
 /** All searched stocks use the same source-quality policy. Select one whole
  * response, prioritising current coverage and then usable history depth. */
@@ -916,18 +1344,118 @@ async function usEastmoneyCandles(symbol: string, interval: Interval, limit: num
   if (candles.length<200) warnings.push(`行情源本次仅返回${candles.length}根K线，历史统计样本可能不足。`);
   return {instrument:instrument('us',symbol,result.name||metadata.name,metadata.exchange,'USD'),interval,candles,source:'东方财富 美股网页行情（备用） · push2his.eastmoney.com',asOf:new Date(now*1000).toISOString(),delayNotice:'延迟行情，非交易所直连 · America/New_York正常交易时段 · 分钟K线为周期结束',adjustment:'不复权（原始价格）；成交量单位：股',warnings,availableIntervals:AVAILABLE_INTERVALS.us};
 }
+function hkDateStamp(date: string): number {
+  return Date.parse(`${date}T09:30:00+08:00`) / 1000;
+}
+async function hkYahooCandles(symbol: string, interval: Interval, limit: number, history?: YahooHistoryWindow, tickerOverride?: string): Promise<MarketData> {
+  const providerInterval = interval === '1h' ? '60m' : interval === '1w' ? '1wk' : interval === '1M' ? '1mo' : interval;
+  const range = interval === '1m' ? '7d' : interval === '1d' ? '5y' : interval === '1h' ? '2y' : '60d';
+  const window = history ? `period1=${history.start}&period2=${history.end}` : interval === '1w' || interval === '1M'
+    ? `period1=${Date.UTC(1900, 0, 1) / 1000}&period2=${Math.floor(Date.now() / 1000) + 86400}` : `range=${range}`;
+  const yahooSymbol = tickerOverride ?? hkYahooSymbol(symbol);
+  const query = `interval=${providerInterval}&${window}&includePrePost=false&events=div%2Csplits`;
+  let data: YahooChart, host = history?.host ?? 'query1.finance.yahoo.com';
+  try {
+    const url = new URL(`https://${host}/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${query}`);
+    data = history ? await loadYahooHistory<YahooChart>(url, history, yahooSymbol) : await json<YahooChart>(url.toString());
+  } catch (error) {
+    if (history) throw error;
+    if (error instanceof MarketError && error.status === 404) throw new MarketError('未找到该港股标的。', 404);
+    if (error instanceof MarketError && [403, 429].includes(error.upstreamStatus || 0)) throw error;
+    host = 'query2.finance.yahoo.com';
+    data = await json<YahooChart>(`https://${host}/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${query}`);
+  }
+  const result = data?.chart?.result?.[0];
+  if (!result || data.chart?.error) throw new MarketError('未找到该港股标的或该周期暂无数据。', 404);
+  const meta = result.meta || {};
+  if (history && (meta as { symbol?: string }).symbol !== yahooSymbol) throw new MarketError('历史行情标的与当前图表不一致。');
+  if (meta.exchangeTimezoneName && meta.exchangeTimezoneName !== 'Asia/Hong_Kong') throw new MarketError('该代码不属于港股市场，请重新选择。', 422);
+  validateYahooGranularity(interval, meta.dataGranularity);
+  const q = result.indicators?.quote?.[0];
+  if (!q || !Array.isArray(result.timestamp) || ![q.open, q.high, q.low, q.close, q.volume].every(Array.isArray)) throw new MarketError('行情源缺少完整K线。');
+  const now = Date.now() / 1000;
+  const adjust = result.indicators?.adjclose?.[0]?.adjclose;
+  const useAdjusted = isCalendarBar(interval) && Array.isArray(adjust);
+  const rows: Candle[] = result.timestamp.map((time: number, i: number) => {
+    const ratio = useAdjusted && Number(q.close[i]) > 0 && Number(adjust?.[i]) > 0 ? Number(adjust?.[i]) / Number(q.close[i]) : 1;
+    return { time, open: q.open[i] == null ? NaN : Number(q.open[i]) * ratio, high: q.high[i] == null ? NaN : Number(q.high[i]) * ratio, low: q.low[i] == null ? NaN : Number(q.low[i]) * ratio, close: q.close[i] == null ? NaN : Number(q.close[i]) * ratio, volume: q.volume[i] == null ? 0 : Number(q.volume[i]), closed: stockBarClosed(time, interval, 'hk', now, meta.currentTradingPeriod?.regular?.end) };
+  });
+  const regularRows = isCalendarBar(interval) ? rows : rows.filter(c => {
+    if (!Number.isFinite(c.time) || c.time % 60 !== 0) return false;
+    const { date, minute } = equityExchangeClock('hk', c.time);
+    return equitySessionOn('hk', date).segments.some(s => minute >= s.start && minute < s.end && (minute - s.start) % MINUTES[interval as Exclude<Interval, '1M'>] === 0);
+  });
+  const prepared = interval === '1M' ? normalizeYahooMonthlyCandles(rows, meta.dataGranularity) : interval === '1w' ? normalizeYahooWeeklyCandles(rows, meta.dataGranularity) : regularRows;
+  const candles = ensure(prepared, 1).slice(-limit);
+  const warnings = ['港股正常交易时段数据；公开网页接口可能限流或延迟。', '港股K线在该周期结束15分钟后确认，覆盖范围内使用交易日历的实际收市时间。'];
+  if (candles.length < 200) warnings.push(`该周期仅有${candles.length}根有效K线，统计样本可能不足。`);
+  return {
+    instrument: instrument('hk', symbol, meta.longName || meta.shortName || popular('hk', symbol)[0]?.name || symbol, '港交所', meta.currency || 'HKD'),
+    interval,
+    candles,
+    source: `Yahoo Finance 港股网页行情 · ${host}`,
+    asOf: new Date(now * 1000).toISOString(),
+    delayNotice: '可能延迟，非交易所直连 · Asia/Hong_Kong正常交易时段 · K线为周期起点',
+    adjustment: useAdjusted ? '按调整后收盘价等比例调整OHLC（分红、拆股），成交量未调整' : '来源原始OHLC；拆股或其他公司行动可能影响历史比较',
+    warnings,
+    availableIntervals: AVAILABLE_INTERVALS.hk,
+  };
+}
+async function hkEastmoneyCandles(symbol: string, interval: Interval, limit: number, endDate?: string): Promise<MarketData> {
+  const code = symbol.replace(/\.HK$/i, '');
+  if (!/^\d{5}$/.test(code)) throw new MarketError('未找到该港股标的或该周期暂无数据。', 404);
+  const secid = `116.${code}`;
+  const klt = eastmoneyPeriod(interval);
+  const params = new URLSearchParams({ secid, klt, fqt: '0', lmt: String(limit + 1), end: endDate?.replaceAll('-', '') ?? '20500101', fields1: 'f1,f2,f3,f4,f5,f6', fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61' });
+  const payload = await json<EastmoneyData>(`https://push2his.eastmoney.com/api/qt/stock/kline/get?${params}`);
+  const result = payload?.data;
+  if (!result || !Array.isArray(result.klines) || result.code !== code) throw new MarketError('未找到该港股标的或该周期暂无数据。', 404);
+  const now = Date.now() / 1000, intraday = !isCalendarBar(interval);
+  const rows: Candle[] = result.klines.filter(raw => typeof raw === 'string').map((raw: string) => {
+    const r = raw.split(',');
+    const time = intraday ? Date.parse(r[0].replace(' ', 'T') + ':00+08:00') / 1000 : hkDateStamp(r[0]);
+    return { time, open: Number(r[1]), close: Number(r[2]), high: Number(r[3]), low: Number(r[4]), volume: Number(r[5]), closed: intraday ? now >= time + 900 : stockBarClosed(time, interval, 'hk', now) };
+  }).filter((c: Candle) => Number.isFinite(c.time));
+  const candles = endDate && !result.klines.length ? [] : ensure(intraday && interval !== '1m' ? rows.slice(1) : rows, 1).slice(-limit);
+  const warnings = ['港股正常交易时段数据；公开网页接口可能限流或延迟。', '不复权历史包含除权除息跳空，可能影响分型和背驰比较。'];
+  if (intraday) warnings.push('分钟K线保留源时间标记（周期结束），已转换为UTC；免费历史窗口有限。');
+  if (candles.length < 200) warnings.push(`行情源本次仅返回${candles.length}根K线，历史统计样本可能不足。`);
+  return {
+    instrument: instrument('hk', symbol, result.name || popular('hk', symbol)[0]?.name || code, '港交所', 'HKD'),
+    interval,
+    candles,
+    source: '东方财富 港股网页行情 · push2his.eastmoney.com',
+    asOf: new Date(now * 1000).toISOString(),
+    delayNotice: intraday ? '延迟行情，非交易所直连 · Asia/Hong_Kong · 分钟K线为周期结束' : '可能延迟，非交易所直连 · Asia/Hong_Kong · 仅交易时段',
+    adjustment: '不复权（原始价格）；成交量单位：股',
+    warnings,
+    availableIntervals: AVAILABLE_INTERVALS.hk,
+  };
+}
 async function cnCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
+  const hub = await getLongbridgeHubCapabilities();
+  const canUseHub = hub.ready && hub.cnRealtime && !symbol.endsWith('.BJ') && LONGBRIDGE_HUB_PERIODS[interval] !== undefined && longbridgeHubKlineUnavailableUntil <= Date.now();
+  let hubError: unknown;
+  if (canUseHub) {
+    try { return await longbridgeHubCandles('cn', symbol, interval, limit); }
+    catch (error) { hubError = error; }
+  }
   const fallbacks = isCalendarBar(interval) && !symbol.endsWith('.BJ') ? [cnTencentCandles,cnSinaCandles] : [cnSinaCandles,cnTencentCandles];
-  return selectStockHistory([
-    ...(cnEastmoneyUnavailableUntil > Date.now() ? [] : [async () => {
-      try { return await cnEastmoneyCandles(symbol,interval,limit); }
-      catch (error) {
-        if (error instanceof MarketError && [403,429].includes(error.upstreamStatus || 0)) cnEastmoneyUnavailableUntil=Date.now()+5*60000;
-        throw error;
-      }
-    }]),
-    ...fallbacks.map(fallback => () => fallback(symbol,interval,limit)),
-  ]);
+  try {
+    return await selectStockHistory([
+      ...(cnEastmoneyUnavailableUntil > Date.now() ? [] : [async () => {
+        try { return await cnEastmoneyCandles(symbol,interval,limit); }
+        catch (error) {
+          if (error instanceof MarketError && [403,429].includes(error.upstreamStatus || 0)) cnEastmoneyUnavailableUntil=Date.now()+5*60000;
+          throw error;
+        }
+      }]),
+      ...fallbacks.map(fallback => () => fallback(symbol,interval,limit)),
+    ]);
+  } catch (error) {
+    if (hubError instanceof MarketError && (!(error instanceof MarketError) || (hubError.status === 404 && error.status !== 404))) throw hubError;
+    throw error;
+  }
 }
 async function cnEastmoneyCandles(symbol: string, interval: Interval, limit: number, endDate?:string): Promise<MarketData> {
   const [code,exchange] = symbol.split('.');

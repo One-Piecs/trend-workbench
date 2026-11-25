@@ -12,11 +12,11 @@ const prices={open:11,high:15,low:10,close:13,volume:200};
 const prior={open:11,high:14,low:11,close:12,volume:170,closed:false};
 
 function snapshot(market:SourceQuote['market'], interval:Interval, candles:Candle[]=[]):MarketData {
-  const symbol={cn:'600519.SH',us:'NVDA',commodity:'CL=F'}[market];
+  const symbol={cn:'600519.SH',hk:'00700.HK',us:'NVDA',commodity:'CL=F'}[market];
   return {
-    instrument:{market,symbol,id:market+':'+symbol,name:symbol,exchange:market,currency:market==='cn'?'CNY':'USD'},
+    instrument:{market,symbol,id:market+':'+symbol,name:symbol,exchange:market,currency:market==='cn'?'CNY':market==='hk'?'HKD':'USD'},
     interval,candles,asOf:'',delayNotice:'',availableIntervals:[interval],warnings:[],
-    source:{cn:'东方财富 网页行情 · push2his.eastmoney.com',us:'Yahoo Finance 网页行情 · query1.finance.yahoo.com',commodity:'Yahoo Finance 期货行情 · query2.finance.yahoo.com'}[market],
+    source:{cn:'东方财富 网页行情 · push2his.eastmoney.com',hk:'Longbridge OpenAPI 港股行情 · open.longbridge.com',us:'Yahoo Finance 网页行情 · query1.finance.yahoo.com',commodity:'Yahoo Finance 期货行情 · query2.finance.yahoo.com'}[market],
     adjustment:'来源原始OHLC',
   };
 }
@@ -26,7 +26,7 @@ function quote(data:MarketData,time:number,provider:string):SourceQuote {
   const bounds=quotePeriodBounds(market,data.interval,time);
   if(!bounds)throw new Error('test fixture outside of session');
   return {
-    market,symbol:data.instrument.symbol,currency:data.instrument.currency,venue:{cn:'XSHG',us:'US',commodity:'NYMEX'}[market],
+    market,symbol:data.instrument.symbol,currency:data.instrument.currency,venue:{cn:'XSHG',hk:'Longbridge OpenAPI',us:'US',commodity:'NYMEX'}[market],
     provider,price:prices.close,time,bar:{...prices,...bounds,interval:data.interval},
   };
 }

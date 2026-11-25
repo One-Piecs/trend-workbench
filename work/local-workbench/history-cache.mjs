@@ -10,7 +10,7 @@ const selection=(market,symbol,interval)=>JSON.stringify([market,symbol.toUpperC
 const identity=({market,symbol,interval,source,adjustment,contract=''})=>JSON.stringify([market,symbol,interval,source,adjustment,contract]);
 const fields=data=>({market:data.instrument.market,symbol:data.instrument.symbol,interval:data.interval,source:data.source,
   adjustment:data.adjustment,...(data.instrument.contract&&{contract:data.instrument.contract})});
-const publicSources=/^(?:(?:Binance|OKX|Bitget|Bybit|Kraken) 公共现货行情 · |Yahoo Finance (?:网页|期货)行情 · |Longbridge OpenAPI 美股行情（含夜盘） · |东方财富 |腾讯证券 |新浪财经 )/;
+const publicSources=/^(?:(?:Binance|OKX|Bitget|Bybit|Kraken) 公共现货行情 · |Yahoo Finance (?:网页|港股网页|期货)行情 · |Longbridge OpenAPI (?:美股行情（含夜盘）|港股行情|A股实时行情) · |东方财富 |腾讯证券 |新浪财经 )/;
 const canKeep=data=>publicSources.test(data.source)&&(data.instrument.market!=='commodity'||!!data.instrument.contract);
 const last=arr=>arr[arr.length-1];
 

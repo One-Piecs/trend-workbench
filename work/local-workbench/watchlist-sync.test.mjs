@@ -18,9 +18,11 @@ test('isMarketActiveForSync distinguishes crypto, CN, commodity, and US regular 
   // Saturday UTC is closed for CME commodity
   assert.equal(isMarketActiveForSync('commodity','1h',Date.parse('2026-11-21T12:00:00Z')),false);
   assert.equal(isMarketActiveForSync('commodity','1h',Date.parse('2026-11-23T12:00:00Z')),true);
-  // Monday 10:00 CST (02:00Z) active for CN, Monday 20:00 CST (12:00Z) inactive
+  // Monday 10:00 CST (02:00Z) active for CN & HK, Monday 20:00 CST (12:00Z) inactive
   assert.equal(isMarketActiveForSync('cn','1m',Date.parse('2026-11-23T02:00:00Z')),true);
   assert.equal(isMarketActiveForSync('cn','1m',Date.parse('2026-11-23T12:00:00Z')),false);
+  assert.equal(isMarketActiveForSync('hk','1m',Date.parse('2026-11-23T02:00:00Z')),true);
+  assert.equal(isMarketActiveForSync('hk','1m',Date.parse('2026-11-23T12:00:00Z')),false);
   // Sunday 21:00 EST (2026-11-23T02:00:00Z): overnight active for Longbridge 1m, closed for regular Yahoo/1d
   assert.equal(isMarketActiveForSync('us','1m',Date.parse('2026-11-23T02:00:00Z'),{longbridgeEnabled:true}),true);
   assert.equal(isMarketActiveForSync('us','1m',Date.parse('2026-11-23T02:00:00Z'),{longbridgeEnabled:false}),false);

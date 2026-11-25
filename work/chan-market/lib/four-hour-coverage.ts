@@ -1,6 +1,6 @@
 import type {Candle} from './market-types.ts';
 import {equityCalendarCoverage,equityFourHourWindows} from './equity-calendar.ts';
-import {exchangeClock} from './timeframe-context.ts';
+import {candleDelaySeconds,exchangeClock} from './timeframe-context.ts';
 
 export interface FourHourGap {
   date:string;
@@ -11,7 +11,7 @@ export interface FourHourGap {
 
 /** Check only due slots at or after the first loaded bar. A truncated history
  * may start in the afternoon, and an open slot has not yet become due. */
-export function auditFourHourCoverage(market:'cn'|'us',candles:readonly Candle[],asOf:number) {
+export function auditFourHourCoverage(market:'cn'|'hk'|'us',candles:readonly Candle[],asOf:number,source='') {
   if(!Number.isFinite(asOf)||!candles.length)return null;
   const bars=candles.filter(c=>Number.isFinite(c.time)&&c.time<=asOf);
   if(!bars.length)return null;
@@ -30,7 +30,7 @@ export function auditFourHourCoverage(market:'cn'|'us',candles:readonly Candle[]
   }
   const gaps:FourHourGap[]=[];
   let completed=0;
-  const delay=market==='us'?15:2;
+  const delay=Math.ceil(candleDelaySeconds(market,'4h',source)/60);
   const lastDay=Date.parse(end+'T00:00:00Z');
   for(let time=Date.parse(start+'T00:00:00Z');time<=lastDay;time+=86400000){
     const date=new Date(time).toISOString().slice(0,10);

@@ -27,6 +27,10 @@ export function isMarketActiveForSync(market,interval,nowMs,{longbridgeEnabled=f
     const {weekday,minute}=clockInZone(nowMs,'Asia/Shanghai');
     return weekday>=1&&weekday<=5&&minute>=565&&minute<=915;
   }
+  if(market==='hk'){
+    const {weekday,minute}=clockInZone(nowMs,'Asia/Hong_Kong');
+    return weekday>=1&&weekday<=5&&minute>=565&&minute<=975;
+  }
   if(market==='us'){
     const {weekday,minute}=clockInZone(nowMs,'America/New_York');
     if(longbridgeEnabled&&['1m','5m','15m','30m','1h'].includes(interval)){

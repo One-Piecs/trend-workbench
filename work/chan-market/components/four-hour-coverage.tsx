@@ -11,11 +11,11 @@ export default function FourHourCoverage({data,bars,replay}:{data:MarketData;bar
   const {t}=useLanguage(),market=data.instrument.market;
   const [open,setOpen]=useState(false),[limit,setLimit]=useState(30);
   const audit=useMemo(()=>{
-    if((market!=='cn'&&market!=='us')||data.interval!=='4h')return null;
+    if((market!=='cn'&&market!=='hk'&&market!=='us')||data.interval!=='4h')return null;
     let asOf=Date.parse(data.asOf)/1000;
     const last=bars.at(-1);
     if(replay&&last)asOf=Math.min(asOf,candleAvailableAt(last,market,'4h',data.source));
-    return auditFourHourCoverage(market,bars,asOf);
+    return auditFourHourCoverage(market,bars,asOf,data.source);
   },[market,data.interval,data.asOf,data.source,bars,replay]);
   if(!bars.length)return null;
   if(!audit)return <div className="calendar-coverage">{t('4小时交易日历未覆盖这段历史','4h session calendar unavailable for this history')}</div>;
@@ -28,7 +28,7 @@ export default function FourHourCoverage({data,bars,replay}:{data:MarketData;bar
       {missing>0&&<span className="calendar-gap"> · {t(`缺 ${missing} 根`,`${missing} missing`)}</span>}
       {pending>0&&<span className="calendar-gap"> · {t(`${pending} 根尚未确认`,`${pending} unconfirmed`)}</span>}
     </summary>
-    <p>{audit.start} – {audit.end} · {market==='us'?t('纽约时间','New York time'):t('北京时间','Beijing time')} · {t('仅核对已到期的交易时段','Completed scheduled periods only')}
+    <p>{audit.start} – {audit.end} · {market==='us'?t('纽约时间','New York time'):market==='hk'?t('香港时间','Hong Kong time'):t('北京时间','Beijing time')} · {t('仅核对已到期的交易时段','Completed scheduled periods only')}
       {audit.partial&&t(' · 部分日期超出日历范围',' · Some dates fall outside calendar coverage')}</p>
     {open&&audit.gaps.length>0&&<><p>{t('以下时段缺少已完成的K线，原因可能是行情源缺数或个股停牌。','These periods have no confirmed bar. The feed may be missing data, or trading in the instrument may have been halted.')}</p>
       <ul tabIndex={0} aria-label={t('缺少或未确认的交易时段','Missing or unconfirmed sessions')}>{audit.gaps.slice(-limit).reverse().map(slot=><li key={slot.date+'-'+slot.start}>{slot.date} · {hhmm(slot.start)}–{hhmm(slot.end)} · {slot.present?t('尚未确认','Unconfirmed'):t('缺K线','Missing bar')}</li>)}</ul>

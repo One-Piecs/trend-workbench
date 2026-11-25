@@ -26,7 +26,7 @@ function availableAt(bar:Candle,context:FeedClock):number {
   // Provider-labelled minute bars carry an in-progress quote before their end.
   // Aggregated equity 4H bars already carry the session bucket's start time.
   const endLabel=['1m','5m','15m','30m','1h'].includes(context.interval)
-    &&(context.market==='cn'||context.market==='us'&&/东方财富|Eastmoney|周期结束/i.test(context.source));
+    &&((context.market==='cn'&&!/Longbridge/i.test(context.source))||(context.market==='us'||context.market==='hk')&&/东方财富|Eastmoney|周期结束/i.test(context.source));
   return endLabel ? bar.time-duration[context.interval] : bar.time;
 }
 

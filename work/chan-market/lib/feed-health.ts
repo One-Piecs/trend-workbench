@@ -40,7 +40,7 @@ export function getFeedHealth(data:MarketData|null,options:FeedHealthOptions):Fe
   const calendar=['1d','1w','1M'].includes(interval);
   // Four-hour equity candles are stamped at the start of the session bucket,
   // including when the original provider uses end labels for its smaller bars.
-  const endLabelled=!calendar&&interval!=='4h'&&market!=='crypto'&&(market==='cn'||/Eastmoney|东方财富/i.test(data.source));
+  const endLabelled=!calendar&&interval!=='4h'&&market!=='crypto'&&((market==='cn'&&!/Longbridge/i.test(data.source))||/Eastmoney|东方财富/i.test(data.source));
   const futureAllowance=endLabelled?spans[interval as Exclude<Interval,'1M'>]+60000:60000;
   if(lastBarTimeMs!>nowMs+futureAllowance||fetchedAtMs!=null&&fetchedAtMs>nowMs+60000||lastSuccessAtMs!=null&&lastSuccessAtMs>nowMs+60000)return result('unknown','时间戳异常','Timestamp mismatch','来源时间或本机时钟超前，暂无法核实时效。','A provider timestamp or local clock is ahead; freshness cannot be verified.');
   if(lastSuccessAtMs==null||fetchedAtMs==null)return result('unknown','取数时间未知','Fetch time unknown','来源未提供有效取数时间，不能确认此响应是否为旧缓存。','No valid fetch timestamp is available; this response may be cached history.');
@@ -56,7 +56,7 @@ export function getFeedHealth(data:MarketData|null,options:FeedHealthOptions):Fe
       '当前交易日的常规时段未经核实，节假日可能提前收市。保留K线，暂停新提醒。','Regular hours are unverified for this trading date. Holiday hours can vary. New alerts are paused.');
   }
   let minute=0;
-  if(market==='cn'||market==='us') {
+  if(market==='cn'||market==='hk'||market==='us') {
     const clock=exchangeClock(nowMs/1000,market);minute=clock.minute;
     const session=equitySessionOn(market,clock.date);
     if(session.status==='unknown')return result('unknown','交易日历未覆盖','Session calendar unavailable',
@@ -64,7 +64,7 @@ export function getFeedHealth(data:MarketData|null,options:FeedHealthOptions):Fe
     if(!session.segments.some(s=>minute>=s.start&&minute<s.end)){
       const lunch=session.segments.length>1&&minute>=session.segments[0].end&&minute<session.segments[1].start;
       const lastEnd=session.segments.at(-1)?.end;
-      const early=market==='us'&&lastEnd!==undefined&&lastEnd<960&&minute>=lastEnd;
+      const early=(market==='us'||market==='hk')&&lastEnd!==undefined&&lastEnd<960&&minute>=lastEnd;
       const label=lunch?'午间休市':early?'今日已提前收市':session.status==='closed'?'今日休市':'常规交易时段外';
       const en=lunch?'Lunch break':early?'Early close today':session.status==='closed'?'Market closed today':'Outside regular trading hours';
       return result('closed',label,en,`按交易所当地日历，${label}。最近K线日期 ${lastDate}。`,
@@ -89,7 +89,7 @@ export function getFeedHealth(data:MarketData|null,options:FeedHealthOptions):Fe
   const age=nowMs-lastBarTimeMs!;
   if(market==='commodity'&&lastDate!==nowDate)return result('stale','等待本期货交易日行情','Waiting for this futures session',
     '最新K线仍属于上一交易日，暂停新提醒。','The latest candle is from a previous trading date. New alerts are paused.');
-  if((market==='cn'||market==='us')&&lastDate!==nowDate) {
+  if((market==='cn'||market==='hk'||market==='us')&&lastDate!==nowDate) {
     if(minute<570+delayedLag/60000)return {...result('delayed','开盘数据衔接中','Opening-session delay',
       '仍是上一交易日K线，处于开盘容忍窗口；等待当前交易日数据前不应追报旧信号。',
       'The feed still contains the prior session during the opening grace window. Do not replay old signals while waiting for current-session bars.'),allowSignals:false};
