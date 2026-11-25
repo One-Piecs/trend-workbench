@@ -26,7 +26,7 @@ if(!process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE){
     try{
       execFileSync(bin,['auth','status'],{stdio:'ignore',timeout:10000,env:{...process.env,PATH:`/opt/homebrew/bin:/usr/local/bin:${process.env.PATH||''}`}});
       process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE='1';
-    }catch{}
+    }catch{console.warn('Longbridge CLI auth probe failed; falling back to regular-session sources.');}
   }
 }
 
@@ -115,7 +115,7 @@ const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url||'/',origin);
     const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist');
     if(!allowedMethod)return json(res,405,{error:'Read-only endpoint'});
-    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit,watchlistSync:watchlistSync.status().enabled});
+    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit,longbridge:process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE==='1',watchlistSync:watchlistSync.status().enabled});
     if(url.pathname==='/session'){
       if(req.method!=='GET')return json(res,405,{error:'GET required'});
       clearTimeout(exitTimer);

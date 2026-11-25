@@ -22,7 +22,8 @@ import { getLicensedLiveQuote } from './licensed-live-quote.ts';
 export class MarketError extends Error {
   status: number;
   upstreamStatus?: number;
-  constructor(message: string, status = 502, upstreamStatus?: number) { super(message); this.name = 'MarketError'; this.status = status; this.upstreamStatus = upstreamStatus; }
+  code?: number;
+  constructor(message: string, status = 502, upstreamStatus?: number, code?: number) { super(message); this.name = 'MarketError'; this.status = status; this.upstreamStatus = upstreamStatus; this.code = code; }
 }
 const ALL_INTERVALS: Interval[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M'];
 export const AVAILABLE_INTERVALS: Record<Market, Interval[]> = {
@@ -42,6 +43,8 @@ let yahooUnavailableUntil = 0;
 let yahooSearchUnavailableUntil = 0;
 let cnEastmoneyUnavailableUntil = 0;
 let longbridgeUnavailableUntil = 0;
+let longbridgeHistoryUnavailableUntil = 0;
+let longbridgeHistoryUnsupportedUntil = 0;
 /** A network-route change (sleep/wake, VPN switch) re-arms every provider cooldown, not only crypto. */
 export function resetMarketNetworkFailures() {
   resetCryptoSources();
@@ -49,6 +52,8 @@ export function resetMarketNetworkFailures() {
   yahooSearchUnavailableUntil = 0;
   cnEastmoneyUnavailableUntil = 0;
   longbridgeUnavailableUntil = 0;
+  longbridgeHistoryUnavailableUntil = 0;
+  longbridgeHistoryUnsupportedUntil = 0;
 }
 const cache = new Map<string, { expires: number; value: Promise<unknown> }>();
 async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
@@ -479,12 +484,13 @@ function longbridgeCliError(error: unknown): MarketError {
   const reported = longbridgeErrorOutput(String(failure.stdout ?? '').trim()) ?? longbridgeErrorOutput(String(failure.stderr ?? '').trim());
   const detail = reported?.message || [failure.stderr, failure.stdout, failure.message].map(x => String(x ?? '').trim()).filter(Boolean)[0]?.split('\n')[0]
     || (failure.killed ? '请求超时' : '行情源暂时无法连接');
-  if (reported?.code === 301600 || reported?.code === 301603) return new MarketError(`Longbridge 未收录该美股标的或暂无行情（${detail}）。`, 404);
-  if (reported?.code === 301604) return new MarketError(`Longbridge 行情权限不足（${detail}）。`, 503);
-  if (reported?.code === 301606) return new MarketError('Longbridge 行情源限流，请稍后重试。', 429, 429);
-  return new MarketError(`Longbridge 行情源暂不可用：${detail.slice(0, 120)}`, 502);
+  if (reported?.code === 301600 || reported?.code === 301603) return new MarketError(`Longbridge 未收录该美股标的或暂无行情（${detail}）。`, 404, undefined, reported.code);
+  if (reported?.code === 301604) return new MarketError(`Longbridge 行情权限不足（${detail}）。`, 503, undefined, reported.code);
+  if (reported?.code === 301606) return new MarketError('Longbridge 行情源限流，请稍后重试。', 429, 429, reported.code);
+  if (reported?.code === 301607) return new MarketError(`Longbridge 历史K线额度不足（${detail}）。`, 503, undefined, reported.code);
+  return new MarketError(`Longbridge 行情源暂不可用：${detail.slice(0, 120)}`, 502, undefined, reported?.code);
 }
-let longbridgeRun: LongbridgeRunner = async args => {
+let longbridgeExec: LongbridgeRunner = async args => {
   while (longbridgeBinaryIndex < LONGBRIDGE_BINARIES.length) {
     try {
       const { stdout } = await promisify(execFile)(LONGBRIDGE_BINARIES[longbridgeBinaryIndex], args, { timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
@@ -496,8 +502,15 @@ let longbridgeRun: LongbridgeRunner = async args => {
   }
   throw new MarketError('未找到 longbridge CLI，夜盘行情源不可用。', 503);
 };
+async function longbridgeRun(args: string[]): Promise<string> {
+  try {
+    return await longbridgeExec(args);
+  } catch (error) {
+    throw error instanceof MarketError ? error : longbridgeCliError(error);
+  }
+}
 /** Tests inject a stub runner so no real CLI process is ever spawned. */
-export function setLongbridgeRunner(run: LongbridgeRunner) { longbridgeRun = run; }
+export function setLongbridgeRunner(run: LongbridgeRunner) { longbridgeExec = run; }
 /** Start-labelled UTC bars across Intraday/Pre/Post/Overnight sessions; unknown sessions reject the whole feed. */
 export function parseLongbridgeCandles(rows: unknown, interval: Interval, now = Date.now() / 1000): { candles: Candle[]; sessions: Record<string, number> } {
   if (!Array.isArray(rows)) throw new MarketError('Longbridge 行情源返回格式异常。');
@@ -570,7 +583,8 @@ async function longbridgeUsHistory(symbol: string, interval: Interval, before: n
   const period = LONGBRIDGE_PERIODS[interval];
   const windowDays = LONGBRIDGE_HISTORY_DAYS[interval];
   if (!period || !windowDays || !longbridgeOvernightEnabled()) return { candles: [], status: 'unsupported' };
-  if (longbridgeUnavailableUntil > Date.now()) throw new MarketError('Longbridge 夜盘行情源暂时不可用。', 503);
+  if (longbridgeHistoryUnsupportedUntil > Date.now()) return { candles: [], status: 'unsupported' };
+  if (longbridgeHistoryUnavailableUntil > Date.now()) throw new MarketError('Longbridge 历史K线接口暂时不可用。', 503);
   let endDate = localClock(before - 1, 'America/New_York').date;
   for (let attempt = 0; attempt < 4; attempt++) {
     const startDate = shiftDate(endDate, -(windowDays - 1));
@@ -580,8 +594,19 @@ async function longbridgeUsHistory(symbol: string, interval: Interval, before: n
       const now = Date.now() / 1000;
       parsed = parseLongbridgeCandles(raw, interval, now);
     } catch (error) {
-      if (!(error instanceof MarketError) || error.status !== 404) longbridgeUnavailableUntil = Date.now() + 5 * 60000;
-      if (error instanceof MarketError) throw error;
+      if (error instanceof MarketError) {
+        if (error.code === 301604 || (error.code === 301607 && /limit:\s*0\b/i.test(error.message))) {
+          longbridgeHistoryUnsupportedUntil = Date.now() + 6 * 3600_000;
+          return { candles: [], status: 'unsupported' };
+        }
+        if (error.code === 301607) {
+          longbridgeHistoryUnavailableUntil = Date.now() + 60 * 60_000;
+        } else if (error.status !== 404) {
+          longbridgeHistoryUnavailableUntil = Date.now() + 5 * 60000;
+        }
+        throw error;
+      }
+      longbridgeHistoryUnavailableUntil = Date.now() + 5 * 60000;
       throw new MarketError('Longbridge 行情源返回格式异常。');
     }
     const eligible = parsed.candles.filter(c => c.time < before && c.closed !== false);

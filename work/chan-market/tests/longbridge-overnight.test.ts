@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze } from '../lib/chan.ts';
-import { getCandles, getOlderHistory, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
+import { getCandles, getOlderHistory, MarketError, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
 
 const cliRow = (time: string, session: string, open = 100) => ({ time, session, open: String(open), high: String(open + 2), low: String(open - 1), close: String(open + 1), volume: '500', turnover: '50000.000' });
 const withEnv = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -237,6 +237,126 @@ test('unknown symbols stay 404 and never disable other instruments', async () =>
     const result = await withEnv(() => getCandles('us', 'NVDA', '1h', 100));
     assert.ok(result.source.includes('Yahoo'), 'the 404 falls back to the next provider');
   } finally { globalThis.fetch = original; resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
+});
+
+test('kline history 301607 with limit:0 marks history unsupported without affecting live kline', async () => {
+  const source = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const adjustment = '不复权（原始价格）；成交量单位：股';
+  const before = Date.parse('2026-11-24T14:30:00Z') / 1000;
+  let historyCalls = 0;
+  let klineCalls = 0;
+  setLongbridgeRunner(async args => {
+    if (args[0] === 'static') return JSON.stringify([{ symbol: 'QQQ.US', name: 'Invesco QQQ', exchange: 'NASD', currency: 'USD' }]);
+    if (args[0] === 'kline' && args[1] === 'history') {
+      historyCalls++;
+      throw Object.assign(new Error('kline history failed'), {
+        stdout: JSON.stringify({ error: { code: 301607, message: 'history candlestick symbol count out of limit, requested:0/limit:0' } }),
+        stderr: '',
+      });
+    }
+    klineCalls++;
+    return JSON.stringify(Array.from({ length: 12 }, (_, i) => cliRow(`2026-11-23T09:${String(i).padStart(2, '0')}:00Z`, 'Pre', 500 + i)));
+  });
+  const restoreFetch = failOtherSources();
+  try {
+    await withEnv(async () => {
+      const first = await getOlderHistory(new URLSearchParams({
+        market: 'us', symbol: 'QQQ', interval: '1m', source, adjustment, before: String(before), limit: '500',
+      }));
+      assert.equal(first.status, 'unsupported');
+      assert.deepEqual(first.candles, []);
+      assert.equal(historyCalls, 1);
+
+      const second = await getOlderHistory(new URLSearchParams({
+        market: 'us', symbol: 'SPY', interval: '1m', source, adjustment, before: String(before), limit: '500',
+      }));
+      assert.equal(second.status, 'unsupported');
+      assert.deepEqual(second.candles, []);
+      assert.equal(historyCalls, 1, 'unsupported cache must skip repeated CLI spawns');
+
+      const live = await getCandles('us', 'QQQ', '1m', 100);
+      assert.ok(live.source.includes('Longbridge'));
+      assert.equal(live.candles.length, 12);
+      assert.equal(klineCalls, 1);
+
+      resetMarketNetworkFailures();
+      const afterReset = await getOlderHistory(new URLSearchParams({
+        market: 'us', symbol: 'QQQ', interval: '1m', source, adjustment, before: String(before), limit: '500',
+      }));
+      assert.equal(afterReset.status, 'unsupported');
+      assert.equal(historyCalls, 2, 'resetMarketNetworkFailures clears history unsupported cache');
+    });
+  } finally { restoreFetch(); resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
+});
+
+test('kline history quota exhaustion and transient errors isolate history cooldown from live kline', async () => {
+  const source = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const adjustment = '不复权（原始价格）；成交量单位：股';
+  const before = Date.parse('2026-11-24T14:30:00Z') / 1000;
+  let historyCalls = 0;
+  let klineCalls = 0;
+  let mode: 'quota' | 'transient' = 'quota';
+  setLongbridgeRunner(async args => {
+    if (args[0] === 'static') return JSON.stringify([{ symbol: `${args[1]}`, name: 'Test Equity', exchange: 'NASD', currency: 'USD' }]);
+    if (args[0] === 'kline' && args[1] === 'history') {
+      historyCalls++;
+      if (mode === 'quota') {
+        throw Object.assign(new Error('kline history quota'), {
+          stdout: JSON.stringify({ error: { code: 301607, message: 'history candlestick symbol count out of limit, requested:100/limit:100' } }),
+          stderr: '',
+        });
+      }
+      throw Object.assign(new Error('kline history failed'), { stdout: '', stderr: 'Error: history backend timeout' });
+    }
+    klineCalls++;
+    return JSON.stringify(Array.from({ length: 12 }, (_, i) => cliRow(`2026-11-23T09:${String(i).padStart(2, '0')}:00Z`, 'Pre', 120 + i)));
+  });
+  const restoreFetch = failOtherSources();
+  try {
+    await withEnv(async () => {
+      await assert.rejects(
+        getOlderHistory(new URLSearchParams({
+          market: 'us', symbol: 'AMD', interval: '1m', source, adjustment, before: String(before), limit: '500',
+        })),
+        error => error instanceof MarketError && error.status === 503 && error.code === 301607 && /额度不足/.test(error.message),
+      );
+      assert.equal(historyCalls, 1);
+
+      await assert.rejects(
+        getOlderHistory(new URLSearchParams({
+          market: 'us', symbol: 'AMD', interval: '1m', source, adjustment, before: String(before - 60), limit: '500',
+        })),
+        /历史K线接口暂时不可用/,
+      );
+      assert.equal(historyCalls, 1, 'history cooldown must skip repeated CLI spawns');
+
+      const liveQuota = await getCandles('us', 'AMD', '1m', 100);
+      assert.ok(liveQuota.source.includes('Longbridge'));
+      assert.equal(klineCalls, 1);
+
+      resetMarketNetworkFailures();
+      mode = 'transient';
+      await assert.rejects(
+        getOlderHistory(new URLSearchParams({
+          market: 'us', symbol: 'COIN', interval: '1m', source, adjustment, before: String(before), limit: '500',
+        })),
+        error => error instanceof MarketError && error.status === 502,
+      );
+      assert.equal(historyCalls, 2);
+
+      await assert.rejects(
+        getOlderHistory(new URLSearchParams({
+          market: 'us', symbol: 'COIN', interval: '1m', source, adjustment, before: String(before - 60), limit: '500',
+        })),
+        /历史K线接口暂时不可用/,
+      );
+      assert.equal(historyCalls, 2);
+
+      const liveTransient = await getCandles('us', 'COIN', '1m', 100);
+      assert.ok(liveTransient.source.includes('Longbridge'));
+      assert.equal(klineCalls, 2);
+    });
+  } finally { restoreFetch(); resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
 });
 
 function setLongbridgeRunnerDefault() {
