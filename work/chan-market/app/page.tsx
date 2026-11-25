@@ -11,6 +11,7 @@ import {analyze} from '@/lib/chan';
 import {planSessionKey,readPlanSession} from '@/lib/plan-session';
 import {LanguageProvider,useLanguage} from '@/lib/language';
 import {COMMODITY_INSTRUMENTS, searchCommodities} from '@/lib/commodity-catalog';
+import {filterWatchlist} from '@/lib/watchlist-search';
 import {WORKBENCH_BRAND} from '@/lib/workbench-brand';
 import {translateAnalysis} from '@/lib/analysis-i18n';
 import {marketDisplayText,marketLoadErrorText,marketVenueSuffix,translateInstrumentName} from '@/lib/market-i18n';
@@ -102,7 +103,7 @@ function HomeContent(){
   const error=!imported&&feedError?.key===selectionKey?feedError.message:'';
   const loading=fetchLoading||(!data&&!error);
   const [watchlist,setWatchlist]=useState<Instrument[]>([PRESETS[0],PRESETS[1],PRESETS[2],PRESETS[6],PRESETS[7],PRESETS[11]]),[watchTab,setWatchTab]=useState<'all'|'favorites'>('all');
-  const [searchOpen,setSearchOpen]=useState(false),[searchMarket,setSearchMarket]=useState<Market|'all'>('all'),[query,setQuery]=useState(''),[searchResults,setSearchResults]=useState<Instrument[]>([]),[searching,setSearching]=useState(false),[searchWarning,setSearchWarning]=useState('');
+  const [searchOpen,setSearchOpen]=useState(false),[searchMarket,setSearchMarket]=useState<Market|'all'|'favorites'>('all'),[query,setQuery]=useState(''),[searchResults,setSearchResults]=useState<Instrument[]>([]),[searching,setSearching]=useState(false),[searchWarning,setSearchWarning]=useState('');
   const [layers,setLayers]=useState<Layers>(initialLayers);
   const [layerMenu,setLayerMenu]=useState(false);
   const [focused,setFocused]=useState(false);
@@ -183,6 +184,7 @@ function HomeContent(){
     // Search results and loading state synchronize with an external directory.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSearchWarning('');
+    if(searchMarket==='favorites'){setSearching(false);return;}
     if(!q){setSearchResults(PRESETS.filter(i=>searchMarket==='all'||i.market===searchMarket));setSearching(false);return;}
     setSearching(true);const timer=setTimeout(async()=>{try{const res=await fetch(`/api/search?market=${searchMarket}&q=${encodeURIComponent(q)}`,{signal:controller.signal});const result=await res.json() as {results?:Instrument[];warning?:string;error?:string};if(controller.signal.aborted)return;if(!res.ok)throw new Error(result.error||'搜索源暂不可用');setSearchResults(result.results||[]);setSearchWarning(result.warning||'');}catch{if(!controller.signal.aborted){setSearchResults(PRESETS.filter(i=>(searchMarket==='all'||i.market===searchMarket)&&(i.name.toLowerCase().includes(q.toLowerCase())||i.symbol.toLowerCase().includes(q.toLowerCase())||i.market==='commodity'&&searchCommodities(q).some(c=>c.id===i.id))));setSearchWarning('在线搜索暂不可用，当前仅显示常用标的匹配结果。');}}finally{if(!controller.signal.aborted)setSearching(false);}},300);
     return()=>{clearTimeout(timer);controller.abort();};
@@ -259,6 +261,7 @@ function HomeContent(){
   const available=data?.availableIntervals||INTERVALS;
   const center=analysis?.centers.at(-1),cal=analysis?.calibration;
   const watchRows=watchTab==='favorites'?watchlist:PRESETS.filter(i=>i.market===market);
+  const displayedSearchResults=useMemo(()=>searchMarket==='favorites'?filterWatchlist(watchlist,query,language):searchResults,[searchMarket,watchlist,query,searchResults,language]);
   function choose(i:Instrument){
     cancelPendingImport();
     if(imported||i.market!==selected.market||i.symbol!==selected.symbol)chartFeed.cancel();
@@ -396,7 +399,7 @@ function HomeContent(){
     </main>
     <input type="file" accept=".csv,text/csv" ref={fileInput} hidden onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void importFile(f);}}/>
     {toast&&<div className="toast" role="status"><Check size={16}/>{toast}</div>}
-    {searchOpen&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSearchOpen(false);}}><div className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="modal-search-input"><Search size={21}/><input ref={searchInput} id="search-title" value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('搜索代码或名称，如 BTC、黄金、原油…','Search by name or symbol, e.g. BTC, Gold, WTI…')}/><button onClick={()=>setSearchOpen(false)} aria-label={t("关闭搜索","Close search")}><X size={20}/></button></div><div className="search-markets"><button className={searchMarket==='all'?'active':''} onClick={()=>setSearchMarket('all')}>{t('全市场','All markets')}</button>{MARKETS.map(m=><button key={m.id} className={searchMarket===m.id?'active':''} onClick={()=>setSearchMarket(m.id)}>{t(m.title,m.en)}</button>)}<span>{query?t('搜索结果','Results'):t('常用标的','Popular')}</span></div>{searchWarning&&<p className="search-warning">{mt(searchWarning)}</p>}<div className="search-results">{searching?<div className="search-empty"><span className="spinner"/>{t('正在搜索行情目录','Searching market directories')}</div>:searchResults.length?searchResults.map(i=><button key={i.id} onClick={()=>choose(i)}><span className="search-result-symbol">{displaySymbol(i.symbol)}</span><span className="search-result-name">{instrumentName(i.name)}</span><small>{t(MARKETS.find(m=>m.id===i.market)!.title,MARKETS.find(m=>m.id===i.market)!.en)}{marketVenueSuffix(i.exchange,language)}</small><ChevronRight size={15}/></button>):<div className="search-empty">{t("未找到匹配标的。请尝试完整代码、英文名或六位股票代码。","No matching instruments. Try the company name, full ticker or six-digit A-share code.")}</div>}</div><div className="search-foot"><span>{t("按市场查找，避免同名代码混淆","Search all markets or filter by exchange group")}</span><kbd>{t("ESC 关闭","ESC Close")}</kbd></div></div></div>}
+    {searchOpen&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSearchOpen(false);}}><div className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="modal-search-input"><Search size={21}/><input ref={searchInput} id="search-title" value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('搜索代码或名称，如 BTC、黄金、原油…','Search by name or symbol, e.g. BTC, Gold, WTI…')}/><button onClick={()=>setSearchOpen(false)} aria-label={t("关闭搜索","Close search")}><X size={20}/></button></div><div className="search-markets"><button type="button" className={searchMarket==='favorites'?'active':''} onClick={()=>setSearchMarket('favorites')}>{t('自选','Watchlist')}</button><button type="button" className={searchMarket==='all'?'active':''} onClick={()=>setSearchMarket('all')}>{t('全市场','All markets')}</button>{MARKETS.map(m=><button type="button" key={m.id} className={searchMarket===m.id?'active':''} onClick={()=>setSearchMarket(m.id)}>{t(m.title,m.en)}</button>)}<span>{query.trim()?t('搜索结果','Results'):searchMarket==='favorites'?t(`我的自选 · ${watchlist.length}`,`Watchlist · ${watchlist.length}`):t('常用标的','Popular')}</span></div>{searchWarning&&<p className="search-warning">{mt(searchWarning)}</p>}<div className="search-results">{searchMarket!=='favorites'&&searching?<div className="search-empty"><span className="spinner"/>{t('正在搜索行情目录','Searching market directories')}</div>:displayedSearchResults.length?displayedSearchResults.map(i=><button key={i.id} onClick={()=>choose(i)}><span className="search-result-symbol">{displaySymbol(i.symbol)}</span><span className="search-result-name">{instrumentName(i.name)}</span><small>{t(MARKETS.find(m=>m.id===i.market)!.title,MARKETS.find(m=>m.id===i.market)!.en)}{marketVenueSuffix(i.exchange,language)}</small><ChevronRight size={15}/></button>):<div className="search-empty">{searchMarket==='favorites'?(query.trim()?t('自选中未找到匹配标的，可切换到“全市场”搜索。','No matching instruments in your watchlist. Switch to All markets to search.'):t('暂无自选标的，点击标的旁星号即可加入自选。','No watchlist instruments yet. Star an instrument to add it.')):t("未找到匹配标的。请尝试完整代码、英文名或六位股票代码。","No matching instruments. Try the company name, full ticker or six-digit A-share code.")}</div>}</div><div className="search-foot"><span>{t("按市场查找，避免同名代码混淆","Search all markets or filter by exchange group")}</span><kbd>{t("ESC 关闭","ESC Close")}</kbd></div></div></div>}
   </div>;
 }
 
