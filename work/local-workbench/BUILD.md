@@ -8,7 +8,7 @@
 npm ci --prefix work/chan-market
 npm test --prefix work/chan-market
 npm run typecheck --prefix work/chan-market
-node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/windows/launcher.test.mjs
+node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/server.test.mjs work/local-workbench/windows/launcher.test.mjs
 ```
 
 ## Windows x64
@@ -33,6 +33,20 @@ python3 work/local-workbench/macos/verify_archive.py dist/Trend-Workbench-macOS-
 ```
 
 两端的验收脚本都会解压生成的 ZIP，检查资源、本地服务启动与关窗后的退出。添加 `--check-feed` 可按工作台默认深度请求 XRP/USDT 和 BTC/USDT 小时线，检查返回的交易对、报价币、价格和最近一根 K 线时间。
+
+## Linux 服务器部署（独立 Node + systemd user）
+
+Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.sh` 部署（支持 `linux-arm64` 和 `linux-x64`）：
+
+```sh
+./deploy/linux/deploy.sh
+```
+
+脚本会自动校验并安装官方独立 Node.js `24.14.1` 至 `~/.local/opt/node24`（不修改系统 `/usr/bin/node`），在依赖或 `package-lock.json` 变化时执行 `npm ci`，构建 `outputs/shared/` 并运行 `work/local-workbench` 测试，随后生成或保留 `~/.config/systemd/user/trend-workbench.service`（传入 `--no-auto-exit` 保持常驻）、重启服务并校验 `http://127.0.0.1:44123/health` 的 `buildId` 与 `autoExit: false`。后续代码更新只需 `git pull --ff-only && ./deploy/linux/deploy.sh`。
+
+- **保持登出后继续运行**：首次在宿主机启用 linger：`sudo loginctl enable-linger "$USER"`。
+- **访问方式**：服务默认仅监听 `127.0.0.1:44123` 且校验本机 `Host`/`Origin`。推荐在本机用 SSH 端口转发访问：`ssh -L 44123:127.0.0.1:44123 <user>@<host>` 后打开 `http://127.0.0.1:44123`。若经由私网/Tailscale 内 Nginx 反代，需改写 `Host` 与 `Origin`（如 `proxy_set_header Host 127.0.0.1:44123;`、`proxy_set_header Origin "";`）并为 `/session` 关闭缓冲（`proxy_buffering off;`、`proxy_http_version 1.1;`、`proxy_read_timeout 3600s;`），切勿无鉴权暴露到公网。
+- **覆写环境变量**：服务单元示例见 `deploy/linux/trend-workbench.service.example`。可用 `systemctl --user edit trend-workbench.service` 添加覆写项（例如设置 `Environment=TREND_WORKBENCH_LONGBRIDGE_KLINE=0` 关闭服务端 Longbridge 夜盘调用）；`deploy.sh` 默认保留已有 unit 文件，如需按参数重写可执行 `./deploy/linux/deploy.sh --update-service`。
 
 ## 美股夜盘行情（可选）
 

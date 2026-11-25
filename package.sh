@@ -38,7 +38,7 @@ if [[ -z "${skip_tests:-}" ]]; then
   echo "[2/6] 运行测试与类型检查..."
   npm test --prefix work/chan-market
   npm run typecheck --prefix work/chan-market
-  node --test work/local-workbench/network-bootstrap.test.mjs
+  node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/server.test.mjs
 else
   echo "[2/6] 跳过测试（--skip-tests）"
 fi

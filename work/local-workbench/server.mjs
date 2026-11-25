@@ -44,6 +44,7 @@ const publicRoot=resolve(appRoot,'public');
 // The packager replaces this literal. An old process must never read a new
 // release identity from files that were replaced while it was running.
 const buildId='unpackaged';
+const autoExit=!process.argv.includes('--no-auto-exit')&&process.env.TREND_WORKBENCH_NO_AUTO_EXIT!=='1';
 const portIndex=process.argv.indexOf('--port');
 const requestedPort=portIndex<0?43127:Number(process.argv[portIndex+1]);
 if(!Number.isInteger(requestedPort)||(requestedPort!==0&&requestedPort<1024)||requestedPort>65535)throw new Error('Invalid local port');
@@ -53,14 +54,14 @@ const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'applicatio
 const windows=new Set();
 const archive=createHistoryCache({getCandles,getOlderHistory,latestHistoryGap});
 let exitTimer;
-function shutdown(){
-  console.log('No workbench windows remain. Stopping local service.');
+function shutdown(reason='No workbench windows remain. Stopping local service.'){
+  console.log(reason);
   for(const window of windows)window.end();
   server.closeAllConnections();
   server.close(()=>process.exit(0));
   setTimeout(()=>process.exit(0),1000).unref();
 }
-function scheduleExit(ms){clearTimeout(exitTimer);exitTimer=setTimeout(shutdown,ms);}
+function scheduleExit(ms){if(!autoExit)return;clearTimeout(exitTimer);exitTimer=setTimeout(()=>shutdown(),ms);}
 
 const server=http.createServer(async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
@@ -73,7 +74,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.method!=='GET'&&req.method!=='HEAD')return json(res,405,{error:'Read-only endpoint'});
   try{
     const url=new URL(req.url||'/',origin);
-    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit:true});
+    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit});
     if(url.pathname==='/session'){
       if(req.method!=='GET')return json(res,405,{error:'GET required'});
       clearTimeout(exitTimer);
@@ -149,4 +150,4 @@ server.listen(requestedPort,'127.0.0.1',()=>{
   console.log(`Trend Workbench ${origin} · pid ${process.pid}`);
   scheduleExit(90000);
 });
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,shutdown);
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>shutdown(`Received ${signal}. Stopping local service.`));

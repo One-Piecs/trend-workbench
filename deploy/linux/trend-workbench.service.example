@@ -1,0 +1,20 @@
+[Unit]
+Description=trend-workbench · 趋势判断工作台 Web 服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/stock/trend-workbench
+Environment=PATH=%h/.local/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+# 如不想启用本机 Longbridge CLI 美股夜盘，取消下一行注释（或用 systemctl --user edit 覆盖）：
+# Environment=TREND_WORKBENCH_LONGBRIDGE_KLINE=0
+ExecStart=%h/.local/opt/node24/bin/node %h/stock/trend-workbench/outputs/shared/server.mjs --port 44123 --no-auto-exit
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
