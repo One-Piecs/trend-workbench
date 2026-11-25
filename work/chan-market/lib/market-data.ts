@@ -195,6 +195,11 @@ export async function getOlderHistory(params:URLSearchParams) {
   const venue=aggregate?source.slice(0,source.lastIndexOf(' · ')):source;
   const sinaWindow=market==='cn'&&venue==='新浪财经 OHLC（独立备用） · quotes.sina.cn';
   const count=Math.min(2000,aggregate?limit*(child==='1h'?4:8)+8:limit);
+  if(!aggregate&&market==='us'&&venue===LONGBRIDGE_SOURCE){
+    if(adjustment!==LONGBRIDGE_ADJUSTMENT)throw new MarketError('历史行情的标的、周期、来源或复权口径与当前图表不一致。');
+    const page=await longbridgeUsHistory(symbol,child,before,limit);
+    return response(page.status,page.candles);
+  }
   let data:MarketData;
   const isYahoo=(market==='commodity'&&/^Yahoo Finance 期货行情 · query[12]\.finance\.yahoo\.com$/.test(venue))||
     (market==='us'&&/^Yahoo Finance 网页行情 · query[12]\.finance\.yahoo\.com$/.test(venue));
@@ -454,6 +459,13 @@ const LONGBRIDGE_SESSIONS = new Set(['Intraday', 'Pre', 'Post', 'Overnight']);
 const LONGBRIDGE_SESSION_LABELS: Record<string, Candle['session']> = { Intraday: 'regular', Pre: 'pre', Post: 'post', Overnight: 'overnight' };
 const LONGBRIDGE_EXCHANGES: Record<string, string> = { NASD: 'NASDAQ', NYSE: 'NYSE', AMEX: 'NYSE American' };
 const LONGBRIDGE_SOURCE = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+const LONGBRIDGE_ADJUSTMENT = '不复权（原始价格）；成交量单位：股';
+const LONGBRIDGE_HISTORY_DAYS: Partial<Record<Interval, number>> = { '1m': 3, '5m': 5, '15m': 14, '30m': 28, '1h': 60 };
+function shiftDate(date: string, deltaDays: number): string {
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + deltaDays);
+  return day.toISOString().slice(0, 10);
+}
 // GUI-launched macOS apps inherit a minimal PATH; Homebrew locations are tried explicitly.
 const LONGBRIDGE_BINARIES = ['longbridge', '/opt/homebrew/bin/longbridge', '/usr/local/bin/longbridge'];
 let longbridgeBinaryIndex = 0;
@@ -550,9 +562,33 @@ async function longbridgeUsCandles(symbol: string, interval: Interval, limit: nu
     source: LONGBRIDGE_SOURCE,
     asOf: new Date(now * 1000).toISOString(),
     delayNotice: 'Longbridge实时行情 · America/New_York · 含盘前/盘后/夜盘 · K线为周期起点',
-    adjustment: '不复权（原始价格）；成交量单位：股',
+    adjustment: LONGBRIDGE_ADJUSTMENT,
     warnings, availableIntervals: AVAILABLE_INTERVALS.us,
   };
+}
+async function longbridgeUsHistory(symbol: string, interval: Interval, before: number, limit: number): Promise<{ candles: Candle[]; status: 'more' | 'end' | 'unsupported' }> {
+  const period = LONGBRIDGE_PERIODS[interval];
+  const windowDays = LONGBRIDGE_HISTORY_DAYS[interval];
+  if (!period || !windowDays || !longbridgeOvernightEnabled()) return { candles: [], status: 'unsupported' };
+  if (longbridgeUnavailableUntil > Date.now()) throw new MarketError('Longbridge 夜盘行情源暂时不可用。', 503);
+  let endDate = localClock(before - 1, 'America/New_York').date;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const startDate = shiftDate(endDate, -(windowDays - 1));
+    let parsed: { candles: Candle[]; sessions: Record<string, number> };
+    try {
+      const raw = JSON.parse(await longbridgeRun(['kline', 'history', `${symbol.replace(/-/g, '.')}.US`, '--period', period, '--start', startDate, '--end', endDate, '--session', 'all', '--format', 'json']));
+      const now = Date.now() / 1000;
+      parsed = parseLongbridgeCandles(raw, interval, now);
+    } catch (error) {
+      if (!(error instanceof MarketError) || error.status !== 404) longbridgeUnavailableUntil = Date.now() + 5 * 60000;
+      if (error instanceof MarketError) throw error;
+      throw new MarketError('Longbridge 行情源返回格式异常。');
+    }
+    const eligible = parsed.candles.filter(c => c.time < before && c.closed !== false);
+    if (eligible.length > 0) return { candles: eligible.slice(-limit), status: 'more' };
+    endDate = parsed.candles.length > 0 ? shiftDate(endDate, -1) : shiftDate(startDate, -1);
+  }
+  return { candles: [], status: 'end' };
 }
 async function usCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
   const calendar = interval === '1M' || interval === '1w';

@@ -84,3 +84,62 @@ test('an internal source gap is filled only from a verified page and survives a 
     assert.equal(recovered.candles.filter(b=>b.time===minute(790)).length,1);
   }finally{archive.close();}
 });
+
+test('Longbridge US candles preserve session labels, watchlist items stay pinned beyond 12,000 bars and past 48 unpinned LRU series',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'trend-pin-db-')),filename=join(dir,'history-v2.sqlite');
+  const lbInstrument={market:'us',symbol:'SOXS',id:'us:SOXS',name:'SOXS',exchange:'NYSE American',currency:'USD'};
+  const lbSource='Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const lbAdjustment='不复权（原始价格）；成交量单位：股';
+  const sessions=['overnight','pre','regular','post'];
+  let currentBars=Array.from({length:800},(_,i)=>({...bar(i),session:sessions[i%sessions.length]}));
+  const archive=createHistoryCache({
+    filename,
+    getCandles:async(_m,symbol)=>symbol==='SOXS'
+      ? {instrument:lbInstrument,interval:'1m',source:lbSource,adjustment:lbAdjustment,delayNotice:'',warnings:[],availableIntervals:['1m'],
+          asOf:new Date(minute(30000)*1000).toISOString(),candles:currentBars}
+      : {instrument:{market:'crypto',symbol,id:`crypto:${symbol}`,name:symbol,exchange:'Binance',currency:'USDT'},
+          interval:'1m',source:`Binance 公共现货行情 · ${symbol}`,adjustment,delayNotice:'',warnings:[],availableIntervals:['1m'],
+          asOf:new Date(minute(30000)*1000).toISOString(),candles:range(0,49)},
+    getOlderHistory:async p=>{
+      const before=Number(p.get('before'));
+      const count=Number(p.get('limit'));
+      const firstIdx=(before-start)/60-count;
+      return {...Object.fromEntries(p),status:'more',candles:Array.from({length:count},(_,i)=>({...bar(firstIdx+i),session:'overnight'}))};
+    },
+  });
+  try{
+    assert.deepEqual(archive.getWatchlist(),{initialized:false,items:[]});
+    archive.setWatchlist([lbInstrument]);
+    assert.deepEqual(archive.getWatchlist(),{initialized:true,items:[lbInstrument]});
+
+    // Save 800 bars and verify session preservation on preview
+    currentBars=Array.from({length:800},(_,i)=>({...bar(14000+i),session:sessions[i%sessions.length]}));
+    await archive.candles('us','SOXS','1m',800);
+    const preview=archive.preview('us','SOXS','1m');
+    assert.equal(preview.candles.length,800);
+    assert.equal(preview.candles[0].session,'overnight');
+    assert.equal(preview.candles[1].session,'pre');
+
+    // Backfill past 12,000 bars (13 pages * 1,000 + 800 = 13,800 bars) and confirm pinned SOXS retains > 12,000 bars
+    let cursor=14000;
+    for(let p=0;p<13;p++){
+      await archive.older(new URLSearchParams({market:'us',symbol:'SOXS',interval:'1m',source:lbSource,adjustment:lbAdjustment,before:String(minute(cursor)),limit:'1000'}));
+      cursor-=1000;
+    }
+    const pinnedStatus=archive.listSeriesStatus({pinnedOnly:true});
+    assert.equal(pinnedStatus.length,1);
+    assert.equal(pinnedStatus[0].barCount,13800);
+    assert.equal(pinnedStatus[0].pinned,true);
+
+    // Fetch 55 unrelated unpinned symbols: unpinned LRU keeps 48, pinned SOXS stays untouched
+    for(let k=1;k<=55;k++){
+      await archive.candles('crypto',`SYM${k}USDT`,'1m',800);
+    }
+    const allStatus=archive.listSeriesStatus();
+    assert.equal(allStatus.filter(s=>!s.pinned).length,48);
+    assert.equal(archive.getSeriesInfo('us','SOXS','1m').barCount,13800);
+  }finally{
+    archive.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+});

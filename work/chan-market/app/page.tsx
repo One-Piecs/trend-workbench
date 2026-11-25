@@ -12,6 +12,7 @@ import {planSessionKey,readPlanSession} from '@/lib/plan-session';
 import {LanguageProvider,useLanguage} from '@/lib/language';
 import {COMMODITY_INSTRUMENTS, searchCommodities} from '@/lib/commodity-catalog';
 import {filterWatchlist} from '@/lib/watchlist-search';
+import {WATCHLIST_STORAGE_KEY,parseWatchlist,persistWatchlistRemote,syncWatchlistOnMount} from '@/lib/watchlist-storage';
 import {WORKBENCH_BRAND} from '@/lib/workbench-brand';
 import {translateAnalysis} from '@/lib/analysis-i18n';
 import {marketDisplayText,marketLoadErrorText,marketVenueSuffix,translateInstrumentName} from '@/lib/market-i18n';
@@ -103,6 +104,7 @@ function HomeContent(){
   const error=!imported&&feedError?.key===selectionKey?feedError.message:'';
   const loading=fetchLoading||(!data&&!error);
   const [watchlist,setWatchlist]=useState<Instrument[]>([PRESETS[0],PRESETS[1],PRESETS[2],PRESETS[6],PRESETS[7],PRESETS[11]]),[watchTab,setWatchTab]=useState<'all'|'favorites'>('all');
+  const watchlistTouched=useRef(false);
   const [searchOpen,setSearchOpen]=useState(false),[searchMarket,setSearchMarket]=useState<Market|'all'|'favorites'>('all'),[query,setQuery]=useState(''),[searchResults,setSearchResults]=useState<Instrument[]>([]),[searching,setSearching]=useState(false),[searchWarning,setSearchWarning]=useState('');
   const [layers,setLayers]=useState<Layers>(initialLayers);
   const [layerMenu,setLayerMenu]=useState(false);
@@ -136,9 +138,22 @@ function HomeContent(){
   const [signalTab,setSignalTab]=useState<'setups'|'scenarios'|'signals'>('setups');
   const importGeneration=useRef(0),fileInput=useRef<HTMLInputElement>(null),searchInput=useRef<HTMLInputElement>(null);
   const cancelPendingImport=useCallback(()=>{importGeneration.current++;},[]);
-  // Hydrate the browser-owned watchlist after SSR; it has no server equivalent.
+  // Hydrate browser watchlist and synchronize with the local workbench server if available.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(()=>{try{const stored=JSON.parse(localStorage.getItem('chan-watchlist-v1')||'null');if(Array.isArray(stored)&&stored.every(i=>i&&typeof i.id==='string'&&['crypto','us','cn','commodity'].includes(i.market)&&typeof i.symbol==='string'&&typeof i.name==='string'))setWatchlist(stored);}catch{}},[]);
+  useEffect(()=>{
+    let cancelled=false;
+    let initial=[PRESETS[0],PRESETS[1],PRESETS[2],PRESETS[6],PRESETS[7],PRESETS[11]];
+    try{
+      const parsed=parseWatchlist(JSON.parse(localStorage.getItem(WATCHLIST_STORAGE_KEY)||'null'));
+      if(parsed){initial=parsed;setWatchlist(parsed);}
+    }catch{}
+    void syncWatchlistOnMount(initial).then(remote=>{
+      if(cancelled||watchlistTouched.current||!remote)return;
+      setWatchlist(remote);
+      try{localStorage.setItem(WATCHLIST_STORAGE_KEY,JSON.stringify(remote));}catch{}
+    });
+    return()=>{cancelled=true;};
+  },[]);
   const notify=useCallback((message:string)=>{setToast(message);setTimeout(()=>setToast(''),5500);},[]);
   const lastNotice=useRef<string|null>(null);
   useEffect(()=>{const notice=notices[0];if(!notice||lastNotice.current===notice.id)return;lastNotice.current=notice.id;const event=notice.intrabar?notice.type==='invalidation'?t('收到报价触及止损价','Received quote touched the stop-loss price'):notice.type==='target1'?t('收到报价触及第一止盈价','Received quote touched the take-profit 1 price'):t('收到报价触及第二止盈价','Received quote touched the take-profit 2 price'):notice.type==='condition-met'?t('预判条件满足','Outlook condition met'):notice.type==='invalidated'?t('止损价触及','Stop-loss price touched'):notice.type==='target1'?t('第一止盈价触及','Take-profit 1 price touched'):t('第二止盈价触及','Take-profit 2 price touched');notify(`${notice.symbol} · ${notice.interval} · ${event} ${priceText(notice.price)}`);},[notices,notify,t]);
@@ -273,7 +288,7 @@ function HomeContent(){
     setInterval(i);
   }
   function switchMarket(m:Market){const p=PRESETS.find(i=>i.market===m)!;setWatchTab('all');choose(p);chooseInterval(m==='crypto'?'1h':'1d');}
-  function star(i:Instrument){setWatchlist(prev=>{const next=prev.some(w=>w.id===i.id)?prev.filter(w=>w.id!==i.id):[...prev,i];localStorage.setItem('chan-watchlist-v1',JSON.stringify(next));return next;});}
+  function star(i:Instrument){watchlistTouched.current=true;setWatchlist(prev=>{const next=prev.some(w=>w.id===i.id)?prev.filter(w=>w.id!==i.id):[...prev,i];localStorage.setItem(WATCHLIST_STORAGE_KEY,JSON.stringify(next));void persistWatchlistRemote(next);return next;});}
   function exportCSV(){if(!chartSnapshot.length)return;download(`${selected.symbol}-${interval}${replay!==null?'_replay':''}.csv`,serializeCSV(chartSnapshot),'text/csv;charset=utf-8');notify(t(`已导出 ${chartSnapshot.length} 根K线。`,`Exported ${chartSnapshot.length} bars.`));}
   function exportAnalysis(){if(!analysis||!data)return;download(`${selected.symbol}-${interval}-analysis.json`,JSON.stringify({instrument:data.instrument,interval,source:data.source,adjustment:data.adjustment,asOf:data.asOf,delayNotice:data.delayNotice,lastCandle:candles.at(-1)?.time,ruleVersion:analysis.ruleVersion,penMode,replay:replay!==null,candles,analysis,forecast:rawForecast,feedHealth:health},null,2),'application/json');}
   async function importFile(file:File){

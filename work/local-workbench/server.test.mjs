@@ -18,16 +18,33 @@ export const getJournalMinutes=async()=>({});
 export const getSpotFlow=async()=>({});
 export const getBattleTape=async()=>({});
 export const searchInstruments=async()=>({results:[]});
-export const parseMarket=v=>v;
+export const parseMarket=v=>{if(['crypto','us','cn','commodity'].includes(v))return v;throw new MarketError('Invalid market',400);};
 export const parseSearchMarket=v=>v||'all';
 export const parseInterval=v=>v;
-export const normalizeSymbol=(_m,s)=>s;
+export const normalizeSymbol=(_m,s)=>String(s).trim().toUpperCase();
 export const latestHistoryGap=()=>null;
 export const resetMarketNetworkFailures=()=>{};
 `;
 const networkStub=`export function createNetworkRouteMonitor(){return async()=>({revision:1,status:{mode:'direct',applied:true}});}
 `;
-const historyStub=`export function createHistoryCache(){return {preview:()=>null,candles:async()=>({}),older:async()=>({}),close(){}};}
+const historyStub=`const state={initialized:false,items:[],series:[]};
+export function createHistoryCache(){return {
+  preview:()=>null,candles:async()=>({}),older:async()=>({}),
+  getWatchlist:()=>({initialized:state.initialized,items:state.items}),
+  setWatchlist:items=>{state.initialized=true;state.items=items;return {initialized:true,items};},
+  listSeriesStatus:()=>state.series,
+  getSeriesInfo:()=>null,
+  recordSyncState:()=>{},
+  close(){},
+};}
+`;
+const syncStub=`export function createWatchlistSync({enabled=false}={}){
+  let notified=0;
+  return {
+    start(){},stop(){},notifyWatchlistChanged(){notified++;},
+    status:()=>({enabled,intervals:['1m','5m','15m','1h','1d'],running:false,currentTask:null,lastCycleAt:null,notified}),
+  };
+}
 `;
 
 async function stageServer(){
@@ -37,6 +54,7 @@ async function stageServer(){
   await writeFile(join(dir,'market-data.mjs'),marketStub);
   await writeFile(join(dir,'network-bootstrap.mjs'),networkStub);
   await writeFile(join(dir,'history-cache.mjs'),historyStub);
+  await writeFile(join(dir,'watchlist-sync.mjs'),syncStub);
   await writeFile(join(dir,'public/index.html'),'<!doctype html><title>趋势判断工作台</title>');
   return dir;
 }
@@ -77,15 +95,16 @@ async function startServer(dir,{args=[],env={}}={}){
   };
 }
 
-function sendHttp(port,path,headers={}){
+function sendHttp(port,path,headers={},method='GET',body){
   return new Promise((resolve,reject)=>{
-    const req=http.request({host:'127.0.0.1',port,path,method:'GET',headers},(res)=>{
-      let body='';
+    const req=http.request({host:'127.0.0.1',port,path,method,headers},(res)=>{
+      let out='';
       res.setEncoding('utf8');
-      res.on('data',chunk=>{body+=chunk;});
-      res.on('end',()=>resolve({status:res.statusCode,body}));
+      res.on('data',chunk=>{out+=chunk;});
+      res.on('end',()=>resolve({status:res.statusCode,body:out}));
     });
     req.on('error',reject);
+    if(body!==undefined)req.write(body);
     req.end();
   });
 }
@@ -181,11 +200,54 @@ test('TREND_WORKBENCH_NO_AUTO_EXIT=1 disables auto-exit and responds cleanly to 
   try{
     const health=JSON.parse((await sendHttp(srv.port,'/health')).body);
     assert.equal(health.autoExit,false);
+    assert.equal(health.watchlistSync,true);
 
     const exitPromise=once(srv.child,'exit',{signal:AbortSignal.timeout(5000)});
     srv.child.kill('SIGTERM');
     const [code]=await exitPromise;
     assert.equal(code,0);
+  }finally{
+    await srv.stop();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
+
+test('watchlist and cache status endpoints enforce local origin, method allowlist, and validation',async()=>{
+  const dir=await stageServer();
+  const srv=await startServer(dir,{args:['--no-auto-exit']});
+  try{
+    const initial=await sendHttp(srv.port,'/api/watchlist');
+    assert.equal(initial.status,200);
+    assert.deepEqual(JSON.parse(initial.body),{initialized:false,items:[]});
+
+    const badMethod=await sendHttp(srv.port,'/api/candles?market=crypto&symbol=BTCUSDT&interval=1m',{},'PUT','{}');
+    assert.equal(badMethod.status,405);
+
+    const crossOrigin=await sendHttp(srv.port,'/api/watchlist',{Origin:'https://evil.example','Content-Type':'application/json'},'PUT','{"items":[]}');
+    assert.equal(crossOrigin.status,403);
+
+    const invalidPayload=await sendHttp(srv.port,'/api/watchlist',{'Content-Type':'application/json'},'PUT','{"items":[{"market":"invalid","symbol":"X","name":"X"}]}');
+    assert.equal(invalidPayload.status,400);
+
+    const saved=await sendHttp(srv.port,'/api/watchlist',{'Content-Type':'application/json'},'PUT',JSON.stringify({
+      items:[{id:'us:soxs',market:'us',symbol:'soxs',name:'SOXS',exchange:'NYSE American',currency:'USD'}],
+    }));
+    assert.equal(saved.status,200);
+    assert.deepEqual(JSON.parse(saved.body),{
+      initialized:true,
+      items:[{id:'us:SOXS',market:'us',symbol:'SOXS',name:'SOXS',exchange:'NYSE American',currency:'USD'}],
+    });
+
+    const after=JSON.parse((await sendHttp(srv.port,'/api/watchlist')).body);
+    assert.equal(after.initialized,true);
+    assert.equal(after.items[0].symbol,'SOXS');
+
+    const status=await sendHttp(srv.port,'/api/cache/status');
+    assert.equal(status.status,200);
+    const parsedStatus=JSON.parse(status.body);
+    assert.equal(parsedStatus.enabled,true);
+    assert.equal(parsedStatus.watchlistCount,1);
+    assert.equal(parsedStatus.notified,1);
   }finally{
     await srv.stop();
     await rm(dir,{recursive:true,force:true});

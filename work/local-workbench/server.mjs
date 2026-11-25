@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures } from './market-data.mjs';
 import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
 import { createHistoryCache } from './history-cache.mjs';
+import { createWatchlistSync } from './watchlist-sync.mjs';
 
 // Market adapters perform no requests at module load. Configure the existing
 // user network route before starting the listener or making any market request.
@@ -53,13 +54,52 @@ const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=u
 const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
 const windows=new Set();
 const archive=createHistoryCache({getCandles,getOlderHistory,latestHistoryGap});
+const watchlistSyncEnabled=process.env.TREND_WORKBENCH_WATCHLIST_SYNC==='1'||(!autoExit&&process.env.TREND_WORKBENCH_WATCHLIST_SYNC!=='0');
+let interactiveInFlight=0;
+const watchlistSync=createWatchlistSync({archive,enabled:watchlistSyncEnabled,isInteractiveBusy:()=>interactiveInFlight>0});
+async function interactiveRequest(load){
+  interactiveInFlight++;
+  try{return await load();}
+  finally{interactiveInFlight--;}
+}
+async function readJsonBody(req,maxBytes=65536){
+  const chunks=[];let total=0;
+  for await(const chunk of req){
+    total+=chunk.length;
+    if(total>maxBytes)throw new MarketError('请求体过大。',413);
+    chunks.push(chunk);
+  }
+  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}
+  catch{throw new MarketError('无效的 JSON 请求体。',400);}
+}
+function validateWatchlistPayload(payload){
+  const rawItems=Array.isArray(payload)?payload:payload&&typeof payload==='object'?payload.items:null;
+  if(!Array.isArray(rawItems))throw new MarketError('自选列表格式无效。',400);
+  if(rawItems.length>50)throw new MarketError('自选列表最多支持 50 个标的。',400);
+  const items=[],seen=new Set();
+  for(const row of rawItems){
+    if(!row||typeof row!=='object')throw new MarketError('自选条目格式无效。',400);
+    const market=parseMarket(typeof row.market==='string'?row.market:null);
+    const symbol=normalizeSymbol(market,typeof row.symbol==='string'?row.symbol:'');
+    const name=typeof row.name==='string'?row.name.trim().slice(0,120):'';
+    if(!name)throw new MarketError('自选标的名称不能为空。',400);
+    const exchange=typeof row.exchange==='string'?row.exchange.trim().slice(0,80):'';
+    const currency=typeof row.currency==='string'?row.currency.trim().slice(0,20):'';
+    const id=`${market}:${symbol}`;
+    if(seen.has(id))continue;
+    seen.add(id);
+    items.push({id,market,symbol,name,exchange,currency});
+  }
+  return items;
+}
 let exitTimer;
 function shutdown(reason='No workbench windows remain. Stopping local service.'){
   console.log(reason);
+  void watchlistSync.stop();
   for(const window of windows)window.end();
   server.closeAllConnections();
-  server.close(()=>process.exit(0));
-  setTimeout(()=>process.exit(0),1000).unref();
+  server.close(()=>{archive.close();process.exit(0);});
+  setTimeout(()=>{archive.close();process.exit(0);},1000).unref();
 }
 function scheduleExit(ms){if(!autoExit)return;clearTimeout(exitTimer);exitTimer=setTimeout(()=>shutdown(),ms);}
 
@@ -71,10 +111,11 @@ const server=http.createServer(async(req,res)=>{
   // using the desktop service and its locally configured data feeds.
   if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host||''))return json(res,403,{error:'Local host only'});
   if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Local origin only'});
-  if(req.method!=='GET'&&req.method!=='HEAD')return json(res,405,{error:'Read-only endpoint'});
   try{
     const url=new URL(req.url||'/',origin);
-    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit});
+    const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist');
+    if(!allowedMethod)return json(res,405,{error:'Read-only endpoint'});
+    if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit,watchlistSync:watchlistSync.status().enabled});
     if(url.pathname==='/session'){
       if(req.method!=='GET')return json(res,405,{error:'GET required'});
       clearTimeout(exitTimer);
@@ -85,18 +126,30 @@ const server=http.createServer(async(req,res)=>{
       res.on('close',()=>{clearInterval(heartbeat);windows.delete(res);if(!windows.size)scheduleExit(5000);});
       return;
     }
+    if(url.pathname==='/api/watchlist'){
+      if(req.method==='PUT'){
+        const items=validateWatchlistPayload(await readJsonBody(req));
+        const saved=archive.setWatchlist(items);
+        watchlistSync.notifyWatchlistChanged();
+        return json(res,200,saved);
+      }
+      return json(res,200,archive.getWatchlist());
+    }
+    if(url.pathname==='/api/cache/status'){
+      return json(res,200,{...watchlistSync.status(),watchlistCount:archive.getWatchlist().items.length,series:archive.listSeriesStatus({pinnedOnly:url.searchParams.get('all')!=='1'})});
+    }
     if(url.pathname==='/api/search'){
       const q=url.searchParams.get('q')||'';
       if(q.length>60)throw new MarketError('搜索内容最多60个字符。',400);
       const market=parseSearchMarket(url.searchParams.get('market'));
-      return json(res,200,await marketRequest(()=>searchInstruments(market,q)));
+      return json(res,200,await interactiveRequest(()=>marketRequest(()=>searchInstruments(market,q))));
     }
-    if(url.pathname==='/api/live-quote')return json(res,200,await marketRequest(()=>getWorkbenchLiveQuote(url.searchParams)));
+    if(url.pathname==='/api/live-quote')return json(res,200,await interactiveRequest(()=>marketRequest(()=>getWorkbenchLiveQuote(url.searchParams))));
     if(url.pathname==='/api/battle'){
-      try{return json(res,200,await marketRequest(()=>getBattleTape(url.searchParams)));}
+      try{return json(res,200,await interactiveRequest(()=>marketRequest(()=>getBattleTape(url.searchParams))));}
       catch(error){if(error instanceof RangeError)throw new MarketError(error.message,400);throw error;}
     }
-    if(url.pathname==='/api/history')return json(res,200,await marketRequest(()=>archive.older(url.searchParams)));
+    if(url.pathname==='/api/history')return json(res,200,await interactiveRequest(()=>marketRequest(()=>archive.older(url.searchParams))));
     if(url.pathname==='/api/candles'||url.pathname==='/api/cached-candles'){
       const market=parseMarket(url.searchParams.get('market'));
       const interval=parseInterval(url.searchParams.get('interval')||'1d',market);
@@ -109,13 +162,13 @@ const server=http.createServer(async(req,res)=>{
         const snapshot=archive.preview(market,normalized,interval,Math.min(1000,limit));
         return json(res,snapshot?200:404,snapshot??{error:'没有已保存的历史K线。'});
       }
-      return json(res,200,await marketRequest(()=>archive.candles(market,normalized,interval,limit)));
+      return json(res,200,await interactiveRequest(()=>marketRequest(()=>archive.candles(market,normalized,interval,limit))));
     }
     if(url.pathname==='/api/spot-flow'||url.pathname==='/api/journal-minutes'){
       try{
         await checkNetworkRoute();
         const load=url.pathname==='/api/spot-flow'?getSpotFlow:getJournalMinutes;
-        return json(res,200,await load(url.searchParams));
+        return json(res,200,await interactiveRequest(()=>load(url.searchParams)));
       }catch(error){
         if(error instanceof RangeError)throw new MarketError(error.message,400);
         throw error;
@@ -148,6 +201,7 @@ server.listen(requestedPort,'127.0.0.1',()=>{
   origin=`http://127.0.0.1:${port}`;
   if(process.argv.includes('--announce-ready'))console.log(`TREND_WORKBENCH_READY ${port}`);
   console.log(`Trend Workbench ${origin} · pid ${process.pid}`);
+  watchlistSync.start();
   scheduleExit(90000);
 });
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>shutdown(`Received ${signal}. Stopping local service.`));

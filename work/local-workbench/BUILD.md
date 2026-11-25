@@ -8,7 +8,7 @@
 npm ci --prefix work/chan-market
 npm test --prefix work/chan-market
 npm run typecheck --prefix work/chan-market
-node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/server.test.mjs work/local-workbench/windows/launcher.test.mjs
+node --test work/local-workbench/network-bootstrap.test.mjs work/local-workbench/history-cache.test.mjs work/local-workbench/watchlist-sync.test.mjs work/local-workbench/server.test.mjs work/local-workbench/windows/launcher.test.mjs
 ```
 
 ## Windows x64
@@ -47,6 +47,18 @@ Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.s
 - **保持登出后继续运行**：首次在宿主机启用 linger：`sudo loginctl enable-linger "$USER"`。
 - **访问方式**：服务默认仅监听 `127.0.0.1:44123` 且校验本机 `Host`/`Origin`。推荐在本机用 SSH 端口转发访问：`ssh -L 44123:127.0.0.1:44123 <user>@<host>` 后打开 `http://127.0.0.1:44123`。若经由私网/Tailscale 内 Nginx 反代，需改写 `Host` 与 `Origin`（如 `proxy_set_header Host 127.0.0.1:44123;`、`proxy_set_header Origin "";`）并为 `/session` 关闭缓冲（`proxy_buffering off;`、`proxy_http_version 1.1;`、`proxy_read_timeout 3600s;`），切勿无鉴权暴露到公网。
 - **覆写环境变量**：服务单元示例见 `deploy/linux/trend-workbench.service.example`。可用 `systemctl --user edit trend-workbench.service` 添加覆写项（例如设置 `Environment=TREND_WORKBENCH_LONGBRIDGE_KLINE=0` 关闭服务端 Longbridge 夜盘调用）；`deploy.sh` 默认保留已有 unit 文件，如需按参数重写可执行 `./deploy/linux/deploy.sh --update-service`。
+
+## 自选历史缓存与后台增量采集
+
+服务端使用内置 SQLite（默认路径 `~/.cache/TrendWorkbench/history-v2.sqlite`）按行持久化已收盘 K 线，并保留盘前/盘后/夜盘时段标记：
+
+- **自选保护**：通过 `/api/watchlist`（`GET` / `PUT`）与前端同步自选标的。自选标的不受非自选 LRU（48 条序列 / 12,000 根）淘汰限制，单周期可保留更长历史（如 `1m` 最高 25 万根、`5m/15m` 15 万根、`1h` 10 万根、`1d` 5 万根），可通过 `GET /api/cache/status` 查看各序列覆盖范围与同步状态。
+- **后台采集**：常驻模式（`--no-auto-exit` 或 `TREND_WORKBENCH_NO_AUTO_EXIT=1`）默认开启后台低并发增量采集与冷启动回溯，并在前台交互请求到来时自动让路。
+- **常用环境变量**：
+  - `TREND_WORKBENCH_WATCHLIST_SYNC`：`1` 强制启用，`0` 关闭（桌面默认关闭，常驻服务默认开启）。
+  - `TREND_WORKBENCH_SYNC_INTERVALS`：逗号分隔采集周期，默认 `1m,5m,15m,1h,1d`。
+  - `TREND_WORKBENCH_CACHE_MAX_MB`：SQLite 最大磁盘占用上限（MB），默认 `2048`。
+  - `TREND_WORKBENCH_CACHE_PATH`：自定义 SQLite 缓存文件路径。
 
 ## 美股夜盘行情（可选）
 

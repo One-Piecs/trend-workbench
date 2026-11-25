@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze } from '../lib/chan.ts';
-import { getCandles, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
+import { getCandles, getOlderHistory, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
 
 const cliRow = (time: string, session: string, open = 100) => ({ time, session, open: String(open), high: String(open + 2), low: String(open - 1), close: String(open + 1), volume: '500', turnover: '50000.000' });
 const withEnv = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -95,6 +95,78 @@ test('real-time Longbridge 1m candles confirm at bar close so MACD reaches the l
   assert.equal(candles.at(-1)?.closed, false);
   const analysis = analyze(candles, { skipCalibration: true, skipTradePlans: true });
   assert.equal(analysis.macd.at(-1)?.time, candles.at(-2)?.time);
+});
+
+test('getOlderHistory pages Longbridge 1h and 5m bars with session labels and strict before boundary', async () => {
+  const calls: string[][] = [];
+  const source = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const adjustment = '不复权（原始价格）；成交量单位：股';
+  const before = Date.parse('2026-11-24T14:30:00Z') / 1000;
+  setLongbridgeRunner(async args => {
+    calls.push(args);
+    return JSON.stringify([
+      cliRow('2026-11-24T09:00:00Z', 'Pre', 64),
+      cliRow('2026-11-24T13:30:00Z', 'Pre', 65),
+      cliRow('2026-11-24T14:30:00Z', 'Intraday', 66),
+    ]);
+  });
+  try {
+    const page1h = await withEnv(() => getOlderHistory(new URLSearchParams({
+      market: 'us', symbol: 'SOXS', interval: '1h', source, adjustment, before: String(before), limit: '500',
+    })));
+    assert.equal(page1h.status, 'more');
+    assert.deepEqual(page1h.candles.map(c => c.session), ['pre', 'pre']);
+    assert.equal(page1h.candles.every(c => c.time < before), true);
+    assert.deepEqual(calls[0].slice(0, 5), ['kline', 'history', 'SOXS.US', '--period', '1h']);
+
+    const page5m = await withEnv(() => getOlderHistory(new URLSearchParams({
+      market: 'us', symbol: 'SOXS', interval: '5m', source, adjustment, before: String(before), limit: '500',
+    })));
+    assert.equal(page5m.status, 'more');
+    assert.equal(calls[1][4], '5m');
+  } finally { resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
+});
+
+test('getOlderHistory steps endDate back 1 day on busy 1m truncation, steps across empty windows to end, and respects disabled flag', async () => {
+  const source = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const adjustment = '不复权（原始价格）；成交量单位：股';
+  const before = Date.parse('2026-11-24T06:00:00Z') / 1000; // 01:00 EST on 2026-11-24
+  const ends: string[] = [];
+  setLongbridgeRunner(async args => {
+    const end = args[args.indexOf('--end') + 1];
+    ends.push(end);
+    if (end === '2026-11-24') {
+      return JSON.stringify([cliRow('2026-11-24T12:00:00Z', 'Pre', 66)]);
+    }
+    return JSON.stringify([cliRow('2026-11-24T04:59:00Z', 'Overnight', 65)]);
+  });
+  try {
+    const page = await withEnv(() => getOlderHistory(new URLSearchParams({
+      market: 'us', symbol: 'SOXS', interval: '1m', source, adjustment, before: String(before), limit: '500',
+    })));
+    assert.equal(page.status, 'more');
+    assert.deepEqual(ends, ['2026-11-24', '2026-11-23']);
+    assert.equal(page.candles.length, 1);
+    assert.equal(page.candles[0].session, 'overnight');
+
+    const emptyStarts: string[] = [];
+    setLongbridgeRunner(async args => {
+      emptyStarts.push(`${args[args.indexOf('--start') + 1]}..${args[args.indexOf('--end') + 1]}`);
+      return '[]';
+    });
+    const ended = await withEnv(() => getOlderHistory(new URLSearchParams({
+      market: 'us', symbol: 'SOXS', interval: '1m', source, adjustment, before: String(before), limit: '500',
+    })));
+    assert.equal(ended.status, 'end');
+    assert.equal(emptyStarts.length, 4);
+
+    delete process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE;
+    const unsupported = await getOlderHistory(new URLSearchParams({
+      market: 'us', symbol: 'SOXS', interval: '1m', source, adjustment, before: String(before), limit: '500',
+    }));
+    assert.equal(unsupported.status, 'unsupported');
+    assert.deepEqual(unsupported.candles, []);
+  } finally { resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
 });
 
 test('dashed symbols are converted to the Longbridge dot format', async () => {

@@ -169,6 +169,7 @@ if [[ "$skip_tests" -eq 0 ]]; then
   node --test \
     work/local-workbench/network-bootstrap.test.mjs \
     work/local-workbench/history-cache.test.mjs \
+    work/local-workbench/watchlist-sync.test.mjs \
     work/local-workbench/server.test.mjs
 else
   echo "[4/5] Skipping tests (--skip-tests)"
