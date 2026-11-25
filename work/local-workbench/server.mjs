@@ -2,6 +2,7 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, resolve, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { MarketError, getCandles, getOlderHistory, getWorkbenchLiveQuote, getJournalMinutes, getSpotFlow, getBattleTape, searchInstruments, parseMarket, parseSearchMarket, parseInterval, normalizeSymbol, latestHistoryGap, resetMarketNetworkFailures } from './market-data.mjs';
 import { createNetworkRouteMonitor } from './network-bootstrap.mjs';
 import { createHistoryCache } from './history-cache.mjs';
@@ -93,8 +94,76 @@ function validateWatchlistPayload(payload){
   return items;
 }
 let exitTimer;
+let activeBacktestWorker=null;
+function higherIntervalFor(market,interval){
+  const next={'1m':'5m','5m':'15m','15m':'1h','30m':'4h','1h':'4h','4h':'1d','1d':'1w','1w':'1M','1M':null};
+  if(market==='cn'&&interval==='1h')return '1d';
+  if(market==='cn'&&interval==='4h')return '1w';
+  return next[interval]??null;
+}
+function validateOptionalContract(market,symbol,raw){
+  const contract=typeof raw==='string'?raw.trim():'';
+  if(!contract)return '';
+  if(market!=='commodity'||!/^(?:GC|SI|CL)[FGHJKMNQUVXZ]\d{2}$/.test(contract)||!contract.startsWith(symbol.split('=')[0]))throw new MarketError('合约月份无效。',400);
+  return contract;
+}
+function parseEpochParam(raw,name){
+  if(raw===null||raw===undefined||raw==='')return undefined;
+  const value=typeof raw==='number'?raw:Number(raw);
+  if(!Number.isSafeInteger(value)||value<0)throw new MarketError(`${name} 参数无效。`,400);
+  return value;
+}
+function runBacktestWorker({appRoot,primary,higher,canLoadMinutes,options,archive,res}){
+  return new Promise((resolveRun,rejectRun)=>{
+    let settled=false;
+    const worker=new Worker(resolve(appRoot,'backtest-worker.mjs'),{
+      workerData:{primary,higher,canLoadMinutes,options},
+    });
+    activeBacktestWorker=worker;
+    const cleanup=()=>{
+      clearTimeout(timer);
+      res.off('close',onAbort);
+      if(activeBacktestWorker===worker)activeBacktestWorker=null;
+    };
+    const finish=(err,value)=>{
+      if(settled)return;
+      settled=true;
+      cleanup();
+      if(err)rejectRun(err);
+      else resolveRun(value);
+    };
+    const timer=setTimeout(()=>{
+      void worker.terminate();
+      finish(new MarketError('回测计算超时，请缩小K线数量后重试。',504));
+    },120000);
+    timer.unref?.();
+    const onAbort=()=>{
+      if(res.writableEnded||settled)return;
+      void worker.terminate();
+      finish(new MarketError('客户端已取消回测请求。',499));
+    };
+    res.on('close',onAbort);
+    worker.on('message',msg=>{
+      if(!msg||typeof msg!=='object')return;
+      if(msg.type==='need-minutes'){
+        const minute=archive.readMinuteWindows(primary,msg.ranges);
+        worker.postMessage({type:'minutes',minute});
+        return;
+      }
+      if(msg.type==='done'){finish(null,msg.result);return;}
+      if(msg.type==='error'){finish(new MarketError(msg.message||'回测计算失败。',Number.isInteger(msg.status)?msg.status:400));}
+    });
+    worker.on('error',err=>{
+      finish(new MarketError(err instanceof Error?err.message:'回测工作线程异常。',502));
+    });
+    worker.on('exit',code=>{
+      if(!settled)finish(new MarketError(`回测工作线程意外退出 (${code})。`,502));
+    });
+  });
+}
 function shutdown(reason='No workbench windows remain. Stopping local service.'){
   console.log(reason);
+  if(activeBacktestWorker){try{void activeBacktestWorker.terminate();}catch{}activeBacktestWorker=null;}
   void watchlistSync.stop();
   for(const window of windows)window.end();
   server.closeAllConnections();
@@ -113,7 +182,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Local origin only'});
   try{
     const url=new URL(req.url||'/',origin);
-    const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist');
+    const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist')||(req.method==='POST'&&url.pathname==='/api/validation/run');
     if(!allowedMethod)return json(res,405,{error:'Read-only endpoint'});
     if(url.pathname==='/health')return json(res,200,{app:'trend-workbench',version:'VERSION_FROM_PACKAGE',buildId,pid:process.pid,activeWindows:windows.size,autoExit,longbridge:process.env.TREND_WORKBENCH_LONGBRIDGE_KLINE==='1',watchlistSync:watchlistSync.status().enabled});
     if(url.pathname==='/session'){
@@ -137,6 +206,96 @@ const server=http.createServer(async(req,res)=>{
     }
     if(url.pathname==='/api/cache/status'){
       return json(res,200,{...watchlistSync.status(),watchlistCount:archive.getWatchlist().items.length,series:archive.listSeriesStatus({pinnedOnly:url.searchParams.get('all')!=='1'})});
+    }
+    if(url.pathname==='/api/cache/candles'){
+      const market=parseMarket(url.searchParams.get('market'));
+      const interval=parseInterval(url.searchParams.get('interval')||'1d',market);
+      const rawSymbol=url.searchParams.get('symbol');
+      if(!rawSymbol)throw new MarketError('缺少标的代码。',400);
+      const symbol=normalizeSymbol(market,rawSymbol);
+      const source=url.searchParams.get('source')||undefined;
+      const adjustment=url.searchParams.get('adjustment')||undefined;
+      if((source&&source.length>200)||(adjustment&&adjustment.length>200))throw new MarketError('来源或复权参数无效。',400);
+      const contract=validateOptionalContract(market,symbol,url.searchParams.get('contract'));
+      const from=parseEpochParam(url.searchParams.get('from'),'from');
+      const to=parseEpochParam(url.searchParams.get('to'),'to');
+      if(from!==undefined&&to!==undefined&&to<from)throw new MarketError('结束时间不能早于开始时间。',400);
+      const limitRaw=url.searchParams.get('limit');
+      const limit=limitRaw===null||limitRaw===''?5000:Number(limitRaw);
+      if(!Number.isInteger(limit)||limit<1||limit>20000)throw new MarketError('缓存K线数量须为1至20000。',400);
+      const format=url.searchParams.get('format')||'json';
+      if(format!=='json'&&format!=='csv')throw new MarketError('导出格式须为 json 或 csv。',400);
+      const result=archive.readSeries({market,symbol,interval,source,adjustment,contract,from,to,maxBars:limit,contiguousOnly:true});
+      if(!result||!result.data.candles.length)return json(res,404,{error:'本机尚未缓存该标的所选范围的历史K线。'});
+      if(format==='csv'){
+        const csv='time,open,high,low,close,volume,closed\n'+result.data.candles.map(c=>[new Date(c.time*1000).toISOString(),c.open,c.high,c.low,c.close,c.volume,c.closed!==false].join(',')).join('\n');
+        res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${symbol}-${interval}-cached.csv"`,'Cache-Control':'no-store'});
+        res.end(req.method==='HEAD'?undefined:csv);
+        return;
+      }
+      return json(res,200,{
+        market,symbol,interval,
+        source:result.data.source,
+        adjustment:result.data.adjustment,
+        ...(result.data.instrument.contract&&{contract:result.data.instrument.contract}),
+        asOf:result.data.asOf,
+        instrument:result.data.instrument,
+        candles:result.data.candles,
+        totalBars:result.totalBars,
+        segmentCount:result.segmentCount,
+        truncated:result.truncated,
+      });
+    }
+    if(url.pathname==='/api/validation/run'){
+      if(activeBacktestWorker)throw new MarketError('已有回测任务正在运行，请等待当前回测完成。',429);
+      const body=await readJsonBody(req,8192);
+      if(!body||typeof body!=='object'||Array.isArray(body))throw new MarketError('无效的回测参数。',400);
+      const market=parseMarket(typeof body.market==='string'?body.market:null);
+      const interval=parseInterval(typeof body.interval==='string'?body.interval:null,market);
+      const rawSymbol=typeof body.symbol==='string'?body.symbol:'';
+      if(!rawSymbol)throw new MarketError('缺少标的代码。',400);
+      const symbol=normalizeSymbol(market,rawSymbol);
+      const source=typeof body.source==='string'&&body.source?body.source:undefined;
+      const adjustment=typeof body.adjustment==='string'&&body.adjustment?body.adjustment:undefined;
+      if((source&&source.length>200)||(adjustment&&adjustment.length>200))throw new MarketError('来源或复权参数无效。',400);
+      const contract=validateOptionalContract(market,symbol,body.contract);
+      const from=parseEpochParam(body.from,'from');
+      const to=parseEpochParam(body.to,'to');
+      if(from!==undefined&&to!==undefined&&to<from)throw new MarketError('结束时间不能早于开始时间。',400);
+      const maxBars=body.maxBars===undefined?2000:Number(body.maxBars);
+      if(!Number.isInteger(maxBars)||maxBars<100||maxBars>6000)throw new MarketError('回测K线数量须为100至6000。',400);
+      const folds=body.folds===undefined?3:Number(body.folds);
+      if(!Number.isInteger(folds)||folds<2||folds>10)throw new MarketError('滚动折数须为2至10。',400);
+      const warmupFraction=body.warmupFraction===undefined?0.4:Number(body.warmupFraction);
+      if(!Number.isFinite(warmupFraction)||warmupFraction<0.25||warmupFraction>0.75)throw new MarketError('预热比例须在0.25至0.75之间。',400);
+      const feeBps=body.feeBps===undefined?5:Number(body.feeBps);
+      const slippageBps=body.slippageBps===undefined?3:Number(body.slippageBps);
+      if(!Number.isFinite(feeBps)||feeBps<0||feeBps>200||!Number.isFinite(slippageBps)||slippageBps<0||slippageBps>200)throw new MarketError('手续费或滑点须在0至200 bps之间。',400);
+      const penMode=body.penMode===undefined?'new':body.penMode;
+      if(penMode!=='new'&&penMode!=='old')throw new MarketError('笔划分模式无效。',400);
+      if(activeBacktestWorker)throw new MarketError('已有回测任务正在运行，请等待当前回测完成。',429);
+      const primaryResult=archive.readSeries({market,symbol,interval,source,adjustment,contract,from,to,maxBars,contiguousOnly:true});
+      if(!primaryResult||!primaryResult.data.candles.length)return json(res,404,{error:'本机尚未缓存该标的所选范围的历史K线。'});
+      const higher=archive.readCompatibleHigher(primaryResult.data,higherIntervalFor(market,interval),{maxBars:Math.max(maxBars,2000)});
+      const outcome=await runBacktestWorker({
+        appRoot,
+        primary:primaryResult.data,
+        higher,
+        canLoadMinutes:interval!=='1m',
+        options:{folds,warmupFraction,costs:{feeBps,slippageBps},penMode},
+        archive,
+        res,
+      });
+      if(res.writableEnded)return;
+      return json(res,200,{
+        ...outcome,
+        cache:{
+          key:primaryResult.key,
+          totalBars:primaryResult.totalBars,
+          segmentCount:primaryResult.segmentCount,
+          truncated:primaryResult.truncated,
+        },
+      });
     }
     if(url.pathname==='/api/search'){
       const q=url.searchParams.get('q')||'';
@@ -188,12 +347,13 @@ const server=http.createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':type,'Content-Length':info.size,'Cache-Control':'no-cache'});
     res.end(req.method==='HEAD'?undefined:await readFile(asset));
   }catch(error){
+    if(res.writableEnded||res.destroyed)return;
     if(error?.code==='ENOENT')return json(res,404,{error:'Not found'});
     const status=error instanceof MarketError?error.status:502;
     json(res,status,{error:error instanceof Error?error.message:'本机服务暂时无法取得行情。'});
   }
 });
-server.requestTimeout=60000;
+server.requestTimeout=150000;
 server.headersTimeout=15000;
 server.on('error',error=>{console.error(error.code||error.message);process.exitCode=1;});
 server.listen(requestedPort,'127.0.0.1',()=>{

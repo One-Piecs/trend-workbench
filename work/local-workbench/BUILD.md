@@ -52,7 +52,14 @@ Ubuntu/Debian 等 Linux 服务器使用仓库根目录的 `deploy/linux/deploy.s
 
 服务端使用内置 SQLite（默认路径 `~/.cache/TrendWorkbench/history-v2.sqlite`）按行持久化已收盘 K 线，并保留盘前/盘后/夜盘时段标记：
 
-- **自选保护**：通过 `/api/watchlist`（`GET` / `PUT`）与前端同步自选标的。自选标的不受非自选 LRU（48 条序列 / 12,000 根）淘汰限制，单周期可保留更长历史（如 `1m` 最高 25 万根、`5m/15m` 15 万根、`1h` 10 万根、`1d` 5 万根），可通过 `GET /api/cache/status` 查看各序列覆盖范围与同步状态。
+- **自选保护**：通过 `/api/watchlist`（`GET` / `PUT`）与前端同步自选标的。自选标的不受非自选 LRU（48 条序列 / 12,000 根）淘汰限制，单周期可保留更长历史（如 `1m` 最高 25 万根、`5m/15m` 15 万根、`1h` 10 万根、`1d` 5 万根），可通过 `GET /api/cache/status` 查看各序列覆盖范围与同步状态，通过 `GET /api/cache/candles` 读取或导出连续缓存 K 线（支持 `json` 与 `csv`）。
+- **本机缓存滚动回测**：在「预判验证」面板中可直接触发 `POST /api/validation/run`（在独立 `worker_threads` 工作线程中执行 `runCachedBacktest`，不阻塞行情接口），也可通过离线命令对缓存数据库直接导出或批量回测：
+  ```sh
+  npm --prefix work/chan-market run backtest:cache -- --list
+  npm --prefix work/chan-market run backtest:cache -- --watchlist --intervals 5m,15m,1h,1d
+  npm --prefix work/chan-market run backtest:cache -- --market us --symbol NVDA --interval 1d --max-bars 2000
+  npm --prefix work/chan-market run backtest:cache -- --export ./nvda-1d.json --market us --symbol NVDA --interval 1d
+  ```
 - **后台采集**：常驻模式（`--no-auto-exit` 或 `TREND_WORKBENCH_NO_AUTO_EXIT=1`）默认开启后台低并发增量采集与冷启动回溯，并在前台交互请求到来时自动让路。
 - **常用环境变量**：
   - `TREND_WORKBENCH_WATCHLIST_SYNC`：`1` 强制启用，`0` 关闭（桌面默认关闭，常驻服务默认开启）。

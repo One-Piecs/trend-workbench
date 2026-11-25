@@ -27,7 +27,8 @@ export const resetMarketNetworkFailures=()=>{};
 `;
 const networkStub=`export function createNetworkRouteMonitor(){return async()=>({revision:1,status:{mode:'direct',applied:true}});}
 `;
-const historyStub=`const state={initialized:false,items:[],series:[]};
+const historyStub=`const bars=(from,count,span)=>Array.from({length:count},(_,i)=>({time:from+i*span,open:100,high:102,low:99,close:101,volume:100,closed:true}));
+const state={initialized:false,items:[],series:[{key:'["us","AAPL","1h","Yahoo Finance 网页行情 · query1.finance.yahoo.com","来源原始OHLC",""]',market:'us',symbol:'AAPL',interval:'1h',source:'Yahoo Finance 网页行情 · query1.finance.yahoo.com',adjustment:'来源原始OHLC',pinned:true,barCount:120,firstTime:1700000000,lastTime:1700428400,lastSyncAt:1700428400000,lastError:null,backfillDone:true,segmentCount:1}]};
 export function createHistoryCache(){return {
   preview:()=>null,candles:async()=>({}),older:async()=>({}),
   getWatchlist:()=>({initialized:state.initialized,items:state.items}),
@@ -35,8 +36,42 @@ export function createHistoryCache(){return {
   listSeriesStatus:()=>state.series,
   getSeriesInfo:()=>null,
   recordSyncState:()=>{},
+  readSeries:({market,symbol,interval,maxBars=5000})=>{
+    if(symbol!=='AAPL'||interval!=='1h')return null;
+    const all=bars(1700000000,120,3600);
+    const slice=all.slice(-maxBars);
+    return {
+      key:state.series[0].key,
+      totalBars:all.length,
+      segmentCount:1,
+      truncated:all.length>slice.length,
+      data:{instrument:{id:market+':'+symbol,market,symbol,name:'Apple',exchange:'NASDAQ',currency:'USD'},interval,source:state.series[0].source,adjustment:state.series[0].adjustment,asOf:new Date(1700432000000).toISOString(),delayNotice:'',warnings:[],availableIntervals:['1h','4h'],candles:slice},
+    };
+  },
+  readCompatibleHigher:()=>({instrument:{id:'us:AAPL',market:'us',symbol:'AAPL',name:'Apple',exchange:'NASDAQ',currency:'USD'},interval:'4h',source:state.series[0].source,adjustment:state.series[0].adjustment,asOf:new Date(1700432000000).toISOString(),delayNotice:'',warnings:[],availableIntervals:['4h'],candles:bars(1700000000,40,14400)}),
+  readMinuteWindows:(primary,ranges)=>{
+    globalThis.__minuteCalls=(globalThis.__minuteCalls||0)+1;
+    return ranges?.length?{...primary,interval:'1m',candles:bars(ranges[0].start,5,60)}:undefined;
+  },
   close(){},
 };}
+`;
+const backtestStub=`export async function runCachedBacktest({primary,higher,loadMinutes,options}){
+  const minute=loadMinutes?await loadMinutes([{start:primary.candles[0].time,end:primary.candles[0].time+3600}]):undefined;
+  return {
+    generatedAt:'2026-11-25T00:00:00.000Z',
+    durationMs:5,
+    status:'unvalidated',
+    evidenceSufficient:false,
+    activationRecommendation:'Do not activate the regime filter from these reports.',
+    data:{market:primary.instrument.market,symbol:primary.instrument.symbol,interval:primary.interval,source:primary.source,adjustment:primary.adjustment,capturedAt:primary.asOf,totalBars:primary.candles.length,closedBars:primary.candles.length,firstTime:primary.candles[0].time,lastTime:primary.candles.at(-1).time,higherInterval:higher?.interval??null,higherBars:higher?.candles.length??0,minuteMatched:Boolean(minute?.candles?.length),minuteConflictBars:1,minuteResolvedBars:1},
+    method:{folds:options?.folds??3,warmupFraction:options?.warmupFraction??0.4},
+    modelVersions:['v1'],parameterVersions:['p1'],analysisVersions:['a1'],
+    baseline:{completed:1,profitable:1,winRate:1,meanNetR:1.5,medianNetR:1.5,meanNetReturnPct:1.2,published:2,conditionsMet:1,modeledEntries:1,outcomesByStatus:{closed:1},duplicateGeometry:0,minuteResolved:1,ambiguousExits:0,sampleStatus:'insufficient',minimumCompleted:30,evidenceSufficient:false,longCompleted:1,shortCompleted:0,exitReasons:{target2:1,stop:0,gapStop:0}},
+    shadow:{completed:0,profitable:0,winRate:null,meanNetR:null,medianNetR:null,meanNetReturnPct:null,published:0,conditionsMet:0,modeledEntries:0,outcomesByStatus:{},duplicateGeometry:0,minuteResolved:0,ambiguousExits:0,sampleStatus:'insufficient',minimumCompleted:30,evidenceSufficient:false,longCompleted:0,shortCompleted:0,exitReasons:{target2:0,stop:0,gapStop:0}},
+    folds:[],recentTrades:[],limitations:[],
+  };
+}
 `;
 const syncStub=`export function createWatchlistSync({enabled=false}={}){
   let notified=0;
@@ -51,6 +86,8 @@ async function stageServer(){
   const dir=await mkdtemp(join(tmpdir(),'trend-server-'));
   await mkdir(join(dir,'public'),{recursive:true});
   await copyFile(join(here,'server.mjs'),join(dir,'server.mjs'));
+  await copyFile(join(here,'backtest-worker.mjs'),join(dir,'backtest-worker.mjs'));
+  await writeFile(join(dir,'cache-backtest.mjs'),backtestStub);
   await writeFile(join(dir,'market-data.mjs'),marketStub);
   await writeFile(join(dir,'network-bootstrap.mjs'),networkStub);
   await writeFile(join(dir,'history-cache.mjs'),historyStub);
@@ -248,6 +285,54 @@ test('watchlist and cache status endpoints enforce local origin, method allowlis
     assert.equal(parsedStatus.enabled,true);
     assert.equal(parsedStatus.watchlistCount,1);
     assert.equal(parsedStatus.notified,1);
+  }finally{
+    await srv.stop();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
+
+test('cache candles and worker backtest endpoints validate params and run off-thread',async()=>{
+  const dir=await stageServer();
+  const srv=await startServer(dir,{args:['--no-auto-exit']});
+  try{
+    const jsonRes=await sendHttp(srv.port,'/api/cache/candles?market=us&symbol=AAPL&interval=1h&limit=50');
+    assert.equal(jsonRes.status,200);
+    const jsonPayload=JSON.parse(jsonRes.body);
+    assert.equal(jsonPayload.candles.length,50);
+    assert.equal(jsonPayload.totalBars,120);
+    assert.equal(jsonPayload.truncated,true);
+
+    const csvRes=await sendHttp(srv.port,'/api/cache/candles?market=us&symbol=AAPL&interval=1h&limit=10&format=csv');
+    assert.equal(csvRes.status,200);
+    assert.match(csvRes.body,/^time,open,high,low,close,volume,closed\n/);
+    assert.equal(csvRes.body.trim().split('\n').length,11);
+
+    const missingRes=await sendHttp(srv.port,'/api/cache/candles?market=us&symbol=MSFT&interval=1h');
+    assert.equal(missingRes.status,404);
+
+    const badLimit=await sendHttp(srv.port,'/api/cache/candles?market=us&symbol=AAPL&interval=1h&limit=999999');
+    assert.equal(badLimit.status,400);
+
+    const badOrigin=await sendHttp(srv.port,'/api/validation/run',{Origin:'https://evil.example','Content-Type':'application/json'},'POST','{"market":"us","symbol":"AAPL","interval":"1h"}');
+    assert.equal(badOrigin.status,403);
+
+    const badParams=await sendHttp(srv.port,'/api/validation/run',{'Content-Type':'application/json'},'POST','{"market":"us","symbol":"AAPL","interval":"1h","folds":99}');
+    assert.equal(badParams.status,400);
+
+    const notCached=await sendHttp(srv.port,'/api/validation/run',{'Content-Type':'application/json'},'POST','{"market":"us","symbol":"NVDA","interval":"1h"}');
+    assert.equal(notCached.status,404);
+
+    const runRes=await sendHttp(srv.port,'/api/validation/run',{'Content-Type':'application/json'},'POST',JSON.stringify({
+      market:'us',symbol:'AAPL',interval:'1h',maxBars:100,folds:3,
+    }));
+    assert.equal(runRes.status,200);
+    const runPayload=JSON.parse(runRes.body);
+    assert.equal(runPayload.data.symbol,'AAPL');
+    assert.equal(runPayload.data.higherInterval,'4h');
+    assert.equal(runPayload.data.higherBars,40);
+    assert.equal(runPayload.data.minuteMatched,true);
+    assert.equal(runPayload.baseline.winRate,1);
+    assert.equal(runPayload.cache.totalBars,120);
   }finally{
     await srv.stop();
     await rm(dir,{recursive:true,force:true});

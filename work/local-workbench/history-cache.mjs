@@ -475,6 +475,139 @@ export function createHistoryCache({filename=cachePath(),getCandles,getOlderHist
     }catch{}
   }
 
+  function readSeries({market,symbol,interval,source,adjustment,contract='',from,to,maxBars=5000,contiguousOnly=true}={}){
+    try{
+      const conn=connection();
+      if(!conn)return null;
+      const upperSymbol=String(symbol??'').toUpperCase();
+      const record=source&&adjustment
+        ?get(identity({market,symbol:upperSymbol,interval,source,adjustment,contract}),false)
+        :get(selection(market,upperSymbol,interval),true);
+      if(!record||!record.segments.length)return null;
+      const limit=Math.max(1,Math.min(250000,Math.floor(Number(maxBars)||5000)));
+      const fromBound=from!=null&&Number.isFinite(from)?from:null;
+      const toBound=to!=null&&Number.isFinite(to)?to:null;
+      let selectedSeg=null,lo,hi;
+      if(contiguousOnly){
+        if(fromBound!==null||toBound!==null){
+          const minT=fromBound??-Infinity,maxT=toBound??Infinity;
+          let bestOverlap=-1;
+          for(const seg of record.segments){
+            const overlap=Math.min(seg.end_time,maxT)-Math.max(seg.start_time,minT);
+            if(overlap>=0&&(overlap>bestOverlap||(overlap===bestOverlap&&seg.end_time>(selectedSeg?.end_time??-1)))){
+              selectedSeg=seg;
+              bestOverlap=overlap;
+            }
+          }
+          if(!selectedSeg){
+            return {
+              data:{...record.meta,candles:[]},
+              key:record.key,
+              totalBars:record.barCount,
+              segmentCount:record.segments.length,
+              segment:null,
+              truncated:false,
+            };
+          }
+          lo=Math.max(selectedSeg.start_time,minT);
+          hi=Math.min(selectedSeg.end_time,maxT);
+        }else{
+          selectedSeg=last(record.segments);
+          lo=selectedSeg.start_time;
+          hi=selectedSeg.end_time;
+        }
+      }else{
+        lo=fromBound??0;
+        hi=toBound??Number.MAX_SAFE_INTEGER;
+      }
+      const rows=conn.prepare('SELECT time, open, high, low, close, volume, session FROM candles WHERE series_key=? AND time>=? AND time<=? ORDER BY time DESC LIMIT ?')
+        .all(record.key,lo,hi,limit+1);
+      const truncated=rows.length>limit;
+      const slice=truncated?rows.slice(0,limit):rows;
+      return {
+        data:{...record.meta,candles:slice.reverse().map(rowToCandle)},
+        key:record.key,
+        totalBars:record.barCount,
+        segmentCount:record.segments.length,
+        segment:selectedSeg,
+        truncated,
+      };
+    }catch{return null;}
+  }
+
+  function readCompatibleHigher(primaryData,targetInterval,{maxBars=5000}={}){
+    try{
+      if(!targetInterval||!primaryData?.candles?.length)return undefined;
+      const conn=connection();
+      if(!conn)return undefined;
+      const rows=conn.prepare('SELECT key FROM series WHERE selection=? ORDER BY stamp DESC')
+        .all(selection(primaryData.instrument.market,primaryData.instrument.symbol,targetInterval));
+      const contract=primaryData.instrument.contract??'';
+      const primaryPrefix=String(primaryData.source??'').split(' · ')[0].trim();
+      let exact=null,fallback=null;
+      for(const row of rows){
+        const rec=readSeriesRecord(conn,row.key,false);
+        if(!rec)continue;
+        if((rec.meta.instrument.contract??'')!==contract)continue;
+        if(rec.meta.adjustment!==primaryData.adjustment)continue;
+        if(rec.meta.source===primaryData.source){exact=rec;break;}
+        if(!fallback&&primaryPrefix&&String(rec.meta.source??'').split(' · ')[0].trim()===primaryPrefix){
+          fallback=rec;
+        }
+      }
+      const chosen=exact??fallback;
+      if(!chosen)return undefined;
+      const res=readSeries({
+        market:chosen.meta.instrument.market,
+        symbol:chosen.meta.instrument.symbol,
+        interval:chosen.meta.interval,
+        source:chosen.meta.source,
+        adjustment:chosen.meta.adjustment,
+        contract:chosen.meta.instrument.contract??'',
+        to:last(primaryData.candles).time,
+        maxBars,
+        contiguousOnly:true,
+      });
+      return res?.data?.candles?.length>=35?res.data:undefined;
+    }catch{return undefined;}
+  }
+
+  function readMinuteWindows(primaryData,ranges){
+    try{
+      if(!primaryData||primaryData.interval==='1m'||!Array.isArray(ranges)||!ranges.length)return undefined;
+      const conn=connection();
+      if(!conn)return undefined;
+      const rows=conn.prepare('SELECT key FROM series WHERE selection=? ORDER BY stamp DESC')
+        .all(selection(primaryData.instrument.market,primaryData.instrument.symbol,'1m'));
+      const contract=primaryData.instrument.contract??'';
+      const primaryVenue=String(primaryData.source??'').replace(/\s*·\s*(?:30分(?:钟)?|1小时)聚合4小时\s*$/i,'');
+      let minuteRecord=null;
+      for(const row of rows){
+        const rec=readSeriesRecord(conn,row.key,false);
+        if(!rec)continue;
+        if((rec.meta.instrument.contract??'')!==contract)continue;
+        if(rec.meta.adjustment!==primaryData.adjustment)continue;
+        if(rec.meta.source===primaryData.source||rec.meta.source===primaryVenue){
+          minuteRecord=rec;
+          break;
+        }
+      }
+      if(!minuteRecord)return undefined;
+      const stmt=conn.prepare('SELECT time, open, high, low, close, volume, session FROM candles WHERE series_key=? AND time>=? AND time<=? ORDER BY time ASC');
+      const byTime=new Map();
+      const bounded=ranges.slice(0,200);
+      for(const range of bounded){
+        const start=Number(range?.start),end=Number(range?.end);
+        if(!Number.isFinite(start)||!Number.isFinite(end)||end<start)continue;
+        const found=stmt.all(minuteRecord.key,Math.floor(start),Math.ceil(end)+60);
+        for(const r of found)byTime.set(r.time,rowToCandle(r));
+      }
+      if(!byTime.size)return undefined;
+      const candles=[...byTime.values()].sort((a,b)=>a.time-b.time);
+      return {...minuteRecord.meta,candles};
+    }catch{return undefined;}
+  }
+
   return {
     preview,
     candles:refresh,
@@ -484,6 +617,9 @@ export function createHistoryCache({filename=cachePath(),getCandles,getOlderHist
     listSeriesStatus,
     getSeriesInfo,
     recordSyncState,
+    readSeries,
+    readCompatibleHigher,
+    readMinuteWindows,
     close(){disabled=true;db?.close();db=undefined;},
   };
 }

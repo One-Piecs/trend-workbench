@@ -10,7 +10,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "prebuild": "node --experimental-strip-types --test tests/official-header.test.ts",
     "build": "node ../local-workbench/build.mjs --shared-assets ../../outputs/shared",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backtest:cache": "node --experimental-strip-types scripts/backtest-cache.ts"
   },
   "dependencies": {
     "react": "19.2.6",

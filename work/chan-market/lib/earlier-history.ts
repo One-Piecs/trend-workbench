@@ -41,6 +41,20 @@ export function decodePage(body: unknown, expected: Identity, before: number): {
   return {status, bars: rows as Candle[]};
 }
 
+export function decodeCachedHistory(body: unknown, expected: Identity & { contract?: string }, maxBars = 5000): Candle[] {
+  if (!body || typeof body !== 'object') throw new Error('Malformed cached history');
+  const page = body as Record<string, unknown>;
+  if (Object.entries(expected).some(([k, v]) => page[k] !== v)) throw new Error('Cached history series mismatch');
+  const rows = page.candles;
+  if (!Array.isArray(rows) || !rows.length || rows.length > maxBars) throw new Error('Invalid cached history');
+  let previous = 0;
+  for (const row of rows) {
+    if (!isCandle(row, expected.market === 'commodity') || row.closed === false || row.time <= previous) throw new Error('Invalid cached candle');
+    previous = row.time;
+  }
+  return rows as Candle[];
+}
+
 export function createHistorySession(request: typeof fetch = fetch, seriesKey?: string) {
   let state: HistoryState = {bars: emptyBars, status: 'ready'};
   let latest = emptyBars;
@@ -97,8 +111,37 @@ export function createHistorySession(request: typeof fetch = fetch, seriesKey?: 
       if (pending === controller) pending = undefined;
     }
   }
+  async function loadCached(data: MarketData, maxBars = 5000) {
+    if (seriesKey !== undefined && seriesKey !== historySeriesKey(data)) return;
+    refresh(data.candles);
+    if (pending || !latest.length) return;
+    const {market, symbol} = data.instrument;
+    const {source, adjustment, interval} = data;
+    const identity = {market, symbol, interval, source, adjustment, ...(data.instrument.contract&&{contract:data.instrument.contract})};
+    const query = new URLSearchParams({...identity, limit: String(maxBars)});
+    const prevStatus = state.status === 'error' ? 'ready' : state.status;
+    const controller = new AbortController();
+    pending = controller;
+    publish(state.bars, 'loading');
+    try {
+      const response = await request('/api/cache/candles?' + query, {signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90000)])});
+      if (!response.ok) throw new Error('Cached history request failed');
+      const cachedBars = decodeCachedHistory(await response.json(), identity, maxBars);
+      if (pending !== controller) return;
+      const base = state.bars.length ? state.bars : latest;
+      if (!base.length) { publish(cachedBars, prevStatus); return; }
+      if (cachedBars[0].time >= base[0].time) { publish(state.bars, prevStatus); return; }
+      const joined = joinSnapshot(cachedBars, base);
+      if (joined === base) throw new Error('Cached history seam mismatch');
+      publish(joined, prevStatus);
+    } catch {
+      if (pending === controller) publish(state.bars, 'error');
+    } finally {
+      if (pending === controller) pending = undefined;
+    }
+  }
   return {read: () => state, subscribe(listener: () => void) {
     listeners.add(listener);
     return () => { listeners.delete(listener); };
-  }, load, refresh, cancel};
+  }, load, loadCached, refresh, cancel};
 }

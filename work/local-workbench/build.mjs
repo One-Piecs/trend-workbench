@@ -25,6 +25,7 @@ await build({
   alias:{'next/link':path.join(here,'link.tsx')},define:{'process.env.NODE_ENV':'"production"'},
 });
 await build({absWorkingDir:repo,entryPoints:[path.join(repo,'lib/market-data.ts')],outfile:path.join(app,'market-data.mjs'),bundle:true,format:'esm',platform:'node',target:'node24',minify:false});
+await build({absWorkingDir:repo,entryPoints:[path.join(repo,'lib/cache-backtest.ts')],outfile:path.join(app,'cache-backtest.mjs'),bundle:true,format:'esm',platform:'node',target:'node24',minify:false});
 const cssSource=path.join(repo,'app/globals.css');
 const stylesheet=await postcss([tailwind({base:repo})]).process(await readFile(cssSource,'utf8'),{from:cssSource});
 await writeFile(path.join(app,'public/style.css'),stylesheet.css);
@@ -38,12 +39,13 @@ await writeFile(path.join(app,'public/forecast-validation.json'),JSON.stringify(
 await copyFile(path.join(here,'network-bootstrap.mjs'),path.join(app,'network-bootstrap.mjs'));
 await copyFile(path.join(here,'history-cache.mjs'),path.join(app,'history-cache.mjs'));
 await copyFile(path.join(here,'watchlist-sync.mjs'),path.join(app,'watchlist-sync.mjs'));
+await copyFile(path.join(here,'backtest-worker.mjs'),path.join(app,'backtest-worker.mjs'));
 await writeFile(path.join(app,'public/index.html'),`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="theme-color" content="#ffffff"><script>${themeInitScript}</script><title>趋势判断工作台</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><noscript>请在此独立窗口中启用 JavaScript。</noscript><script type="module" src="/app.js"></script></body></html>`);
 const serverSource=(await readFile(path.join(here,'server.mjs'),'utf8')).replace('VERSION_FROM_PACKAGE', version);
 const placeholder="const buildId='unpackaged';";
 if(!serverSource.includes(placeholder))throw new Error('Missing desktop release identifier');
 const identity=createHash('sha256').update(serverSource);
-for(const file of ['market-data.mjs','network-bootstrap.mjs','history-cache.mjs','watchlist-sync.mjs','public/app.js','public/style.css','public/index.html',...audioFiles]){
+for(const file of ['market-data.mjs','cache-backtest.mjs','network-bootstrap.mjs','history-cache.mjs','watchlist-sync.mjs','backtest-worker.mjs','public/app.js','public/style.css','public/index.html',...audioFiles]){
   identity.update(createHash('sha256').update(await readFile(path.join(app,file))).digest());
 }
 const buildId=identity.digest('hex');

@@ -143,3 +143,80 @@ test('Longbridge US candles preserve session labels, watchlist items stay pinned
     await rm(dir,{recursive:true,force:true});
   }
 });
+
+test('readSeries, readCompatibleHigher, and readMinuteWindows return contiguous ranges and compatible supporting feeds',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'trend-read-db-')),filename=join(dir,'history-v2.sqlite');
+  const source='Binance 公共现货行情 · BTCUSDT';
+  const adjustment='原始成交价格，不复权';
+  const instrument={id:'crypto:BTCUSDT',market:'crypto',symbol:'BTCUSDT',name:'Bitcoin',exchange:'Binance',currency:'USDT'};
+  const makeCustomBars=(startSec,count,stepSec)=>Array.from({length:count},(_,i)=>({
+    time:startSec+i*stepSec,
+    open:100+i*0.1,
+    high:102+i*0.1,
+    low:99+i*0.1,
+    close:101+i*0.1,
+    volume:500,
+    closed:true,
+  }));
+  const base=Date.parse('2026-11-01T00:00:00Z')/1000;
+  // Two disconnected 1h segments: [base..base+9h] and [base+100h..base+159h]
+  const oldSeg=makeCustomBars(base,10,3600);
+  const newSeg=makeCustomBars(base+100*3600,60,3600);
+  const higher4h=makeCustomBars(base,45,14400);
+  const minutes1m=makeCustomBars(base+120*3600,120,60);
+
+  let mode='new-1h';
+  const archive=createHistoryCache({
+    filename,
+    getCandles:async(_m,_s,interval)=>{
+      if(interval==='4h')return {instrument,interval:'4h',source,adjustment,delayNotice:'',warnings:[],availableIntervals:['1m','1h','4h'],asOf:new Date((base+200*3600)*1000).toISOString(),candles:higher4h};
+      if(interval==='1m')return {instrument,interval:'1m',source,adjustment,delayNotice:'',warnings:[],availableIntervals:['1m','1h','4h'],asOf:new Date((base+200*3600)*1000).toISOString(),candles:minutes1m};
+      return {instrument,interval:'1h',source,adjustment,delayNotice:'',warnings:[],availableIntervals:['1m','1h','4h'],asOf:new Date((base+200*3600)*1000).toISOString(),candles:mode==='new-1h'?newSeg:oldSeg};
+    },
+    getOlderHistory:async()=>({market:'crypto',symbol:'BTCUSDT',interval:'1h',source,adjustment,status:'more',candles:oldSeg}),
+  });
+  try{
+    await archive.candles('crypto','BTCUSDT','1h',60);
+    // Older disconnected segment saved at older cursor
+    await archive.older(new URLSearchParams({market:'crypto',symbol:'BTCUSDT',interval:'1h',source,adjustment,before:String(base+20*3600),limit:'10'}));
+    await archive.candles('crypto','BTCUSDT','4h',45);
+    await archive.candles('crypto','BTCUSDT','1m',120);
+
+    // Default readSeries returns only latest contiguous segment (60 bars), not oldSeg
+    const latestOnly=archive.readSeries({market:'crypto',symbol:'BTCUSDT',interval:'1h',maxBars:200});
+    assert.equal(latestOnly.segmentCount,2);
+    assert.equal(latestOnly.totalBars,70);
+    assert.equal(latestOnly.data.candles.length,60);
+    assert.equal(latestOnly.data.candles[0].time,newSeg[0].time);
+    assert.equal(latestOnly.truncated,false);
+
+    // maxBars < segment length sets truncated=true and keeps latest N bars
+    const truncated=archive.readSeries({market:'crypto',symbol:'BTCUSDT',interval:'1h',maxBars:15});
+    assert.equal(truncated.data.candles.length,15);
+    assert.equal(truncated.truncated,true);
+    assert.equal(truncated.data.candles[0].time,newSeg[45].time);
+
+    // from/to selects matching older contiguous segment when requested
+    const olderRange=archive.readSeries({market:'crypto',symbol:'BTCUSDT',interval:'1h',from:oldSeg[0].time,to:oldSeg[9].time,maxBars:50});
+    assert.equal(olderRange.data.candles.length,10);
+    assert.equal(olderRange.data.candles[0].time,oldSeg[0].time);
+
+    // readCompatibleHigher fetches >=35 matching higher-timeframe bars up to primary end
+    const higher=archive.readCompatibleHigher(latestOnly.data,'4h');
+    assert.ok(higher);
+    assert.equal(higher.interval,'4h');
+    assert.ok(higher.candles.length>=35);
+    assert.ok(higher.candles.at(-1).time<=latestOnly.data.candles.at(-1).time);
+
+    // readMinuteWindows extracts matching 1m windows cleanly (includes +60s tail for end-labelled compatibility)
+    const win=archive.readMinuteWindows(latestOnly.data,[{start:base+120*3600,end:base+120*3600+3600}]);
+    assert.ok(win);
+    assert.equal(win.interval,'1m');
+    assert.equal(win.candles.length,62);
+    assert.equal(win.candles[0].time,base+120*3600);
+    assert.equal(win.candles.at(-1).time,base+120*3600+3660);
+  }finally{
+    archive.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+});

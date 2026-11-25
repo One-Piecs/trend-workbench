@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect, useMemo, useSyncExternalStore} from 'react';
+import {useCallback, useEffect, useMemo, useSyncExternalStore} from 'react';
 import type {MarketData} from '@/lib/market-types';
 import {createHistorySession, emptyBars, historySeriesKey, joinSnapshot} from '@/lib/earlier-history';
 
@@ -14,5 +14,7 @@ export function useEarlierHistory(data: MarketData | null, online: boolean) {
   const candles = useMemo(() => joinSnapshot(state.bars, snapshot), [state.bars, snapshot]);
   const paging = useMemo(() => key && data ? {status: state.status, onLoad: () => {void session.load(data);}} : undefined,
     [key, data, session, state.status]);
-  return {candles, paging, key};
+  const loadCached = useCallback((maxBars = 5000) => (key && data ? session.loadCached(data, maxBars) : Promise.resolve()),
+    [key, data, session]);
+  return {candles, paging, key, loadCached, loading: state.status === 'loading'};
 }

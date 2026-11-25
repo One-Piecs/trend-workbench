@@ -74,3 +74,26 @@ test('bad pages keep the previous bars intact and allow a retry', async () => {
     assert.deepEqual(times(session.read().bars),[8,9,10,11,12]);
   }
 });
+
+test('loadCached stitches locally cached candles onto the live series and rejects identity or seam mismatches', async () => {
+  const session = createHistorySession(async url => {
+    const parsed = new URL(String(url), 'http://localhost');
+    assert.equal(parsed.pathname, '/api/cache/candles');
+    assert.equal(parsed.searchParams.get('limit'), '5000');
+    return Response.json({...identity, candles: [6, 7, 8, 9, 10, 11].map(bar)});
+  });
+  await session.loadCached(feed, 5000);
+  assert.equal(session.read().status, 'ready');
+  assert.deepEqual(times(session.read().bars), [6, 7, 8, 9, 10, 11, 12]);
+  assert.deepEqual(times(joinSnapshot(session.read().bars, [11, 12, 13].map(bar))), [6, 7, 8, 9, 10, 11, 12, 13]);
+
+  for (const invalid of [
+    {...identity, source: 'other', candles: [6, 7, 8, 9, 10].map(bar)},
+    {...identity, candles: [6, 7, 8, 9, {...bar(10), close: 99}]},
+  ]) {
+    const guarded = createHistorySession(async () => Response.json(invalid));
+    await guarded.loadCached(feed, 5000);
+    assert.equal(guarded.read().status, 'error');
+    assert.deepEqual(guarded.read().bars, []);
+  }
+});

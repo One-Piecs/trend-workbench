@@ -99,6 +99,19 @@ function HomeContent(){
   const selectionKey=`${selected.market}:${selected.symbol}:${interval}`;
   const history=useEarlierHistory(data,!imported);
   const timeline=history.candles;
+  const [cacheSeriesInfo,setCacheSeriesInfo]=useState<{key:string;barCount:number}|null>(null);
+  const activeSeriesIdentity=data&&!imported?JSON.stringify([data.instrument.market,data.instrument.symbol.toUpperCase(),data.interval,data.source,data.adjustment,data.instrument.contract??'']):null;
+  useEffect(()=>{
+    if(!activeSeriesIdentity||!data)return;
+    const controller=new AbortController();
+    void fetch('/api/cache/status?all=1',{signal:controller.signal}).then(res=>res.ok?res.json():null).then((body:{series?:{market:string;symbol:string;interval:string;source:string;adjustment:string;contract?:string;barCount:number}[]}|null)=>{
+      if(controller.signal.aborted||!body?.series)return;
+      const match=body.series.find(s=>JSON.stringify([s.market,s.symbol.toUpperCase(),s.interval,s.source,s.adjustment,s.contract??''])===activeSeriesIdentity);
+      setCacheSeriesInfo(match?{key:activeSeriesIdentity,barCount:match.barCount}:null);
+    }).catch(()=>{});
+    return()=>controller.abort();
+  },[activeSeriesIdentity,data]);
+  const cachedSeriesBars=activeSeriesIdentity&&cacheSeriesInfo?.key===activeSeriesIdentity?cacheSeriesInfo.barCount:undefined;
   const linkedData=useMemo(()=>data&&timeline!==data.candles?{...data,candles:timeline}:data,[data,timeline]);
   const cached=Boolean(data&&snapshot?.cached);
   const error=!imported&&feedError?.key===selectionKey?feedError.message:'';
@@ -393,7 +406,7 @@ function HomeContent(){
             {replay!==null&&<span className="replay-counter">{chartSnapshot.length} / {timeline.length}</span>}<button className="return-live" disabled={replay===null} onClick={()=>{setReplayTime(null);setPlaying(false);}}>{t("回到最新","Latest")}</button></div>
           <div className="data-source"><span><Radio size={11}/>{data?mt(data.source):t('等待行情源','Waiting for data')} · {data?mt(data.adjustment):'—'}{replay!==null&&<b> · {t('历史回放','Replay')}</b>}</span>{data&&!imported&&interval==='4h'&&(market==='cn'||market==='us')&&<span>{market==='cn'?t('4H：每交易日一根','4H: one candle per trading day'):t('4H：按纽约常规盘分段，提前收市日缩短','4H: New York regular session, shortened on early closes')}</span>}<span>{chartSnapshot.length?`${readableTime(chartSnapshot[0].time,locale)} — ${readableTime(last!.time,locale)}`:t('数据时间 —','Data time —')}</span></div>
           {data?.instrument.market==='commodity'&&data.warnings.length>0&&<details className="commodity-data-notes"><summary>{t('历史行情说明','Historical data notes')}</summary>{data.warnings.map(warning=><p key={warning}>{mt(warning)}</p>)}</details>}
-          <HistoryCoverage data={data} earlierBars={Math.max(0,timeline.length-(data?.candles.length??0))}/>
+          <HistoryCoverage data={data} earlierBars={Math.max(0,timeline.length-(data?.candles.length??0))} cachedBars={cachedSeriesBars} onLoadCached={()=>{void history.loadCached(5000);}} loadingCached={history.loading}/>
           {data&&!imported&&(market==='cn'||market==='us')&&interval==='4h'&&<FourHourCoverage data={data} bars={candles} replay={replay!==null}/>}
           </>}
         </section>
@@ -410,7 +423,7 @@ function HomeContent(){
       <WatchMonitor watchlist={watchlist} interval={interval} enabled={monitorEnabled&&live} onEnabledChange={setMonitorEnabled} onSnapshot={onWatchSnapshot}/>
       <ForecastActivity journal={journal} data={data} notices={notices} saved={journalSaved}/>
       <DirectionScorecard records={directionRecords} saved={directionSaved} data={data} forecast={rawForecast}/>
-      <ForecastValidationPanel/>
+      <ForecastValidationPanel selected={currentInstrument} interval={interval} source={data?.source} adjustment={data?.adjustment}/>
     </main>
     <input type="file" accept=".csv,text/csv" ref={fileInput} hidden onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void importFile(f);}}/>
     {toast&&<div className="toast" role="status"><Check size={16}/>{toast}</div>}
