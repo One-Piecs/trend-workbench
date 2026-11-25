@@ -29,6 +29,13 @@ export function higherInterval(market:Market,interval:Interval):Interval|null {
   return next[interval];
 }
 
+export function candleDelaySeconds(market:Market,interval:Interval,source=''):number {
+  if(market==='commodity')return COMMODITY_DELAY_SECONDS;
+  if(market==='crypto'||interval==='1M')return 0;
+  if(market==='us'&&/Longbridge/i.test(source))return 0;
+  return market==='cn'?120:900;
+}
+
 /** Earliest conservative availability, not a prediction of the next trade time.
  * The feeds use start-labelled crypto/Yahoo bars and end-labelled China/EM minute bars.
  * Use the published session close on shortened days. Outside calendar coverage
@@ -36,13 +43,14 @@ export function higherInterval(market:Market,interval:Interval):Interval|null {
  */
 export function candleAvailableAt(candle:Pick<Candle,'time'>,market:Market,interval:Interval,source=''):number {
   if(!Number.isFinite(candle.time))return Infinity;
-  if(market==='commodity')return commodityBarEnd(candle.time,interval)+COMMODITY_DELAY_SECONDS;
+  const delay=candleDelaySeconds(market,interval,source);
+  if(market==='commodity')return commodityBarEnd(candle.time,interval)+delay;
   if(market==='crypto') {
     if(interval!=='1M')return candle.time+seconds[interval];
     const d=new Date(candle.time*1000);
     return Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1)/1000;
   }
-  const c=exchangeClock(candle.time,market),delay=market==='cn'?120:900;
+  const c=exchangeClock(candle.time,market);
   const day=new Date(`${c.date}T00:00:00Z`);
   if(interval==='1M') {
     day.setUTCMonth(day.getUTCMonth()+1,1);
@@ -54,13 +62,22 @@ export function candleAvailableAt(candle:Pick<Candle,'time'>,market:Market,inter
     day.setUTCDate(day.getUTCDate()+(5-day.getUTCDay()+7)%7);
     return localEpoch(day.toISOString().slice(0,10),market==='cn'?900:960,market)+delay;
   }
-  const close=equitySessionOn(market,c.date).segments.at(-1)?.end??(market==='cn'?900:960);
+  const session=equitySessionOn(market,c.date);
+  const close=session.segments.at(-1)?.end??(market==='cn'?900:960);
   if(interval==='1d')return localEpoch(c.date,close,market)+delay;
   if(interval==='4h')return localEpoch(c.date,market==='us'&&c.minute<810?Math.min(810,close):close,market)+delay;
   if(market==='cn'||/东方财富|Eastmoney|周期结束/i.test(source))return candle.time+delay;
-  // Longbridge minute bars are start-labelled and span pre/post/overnight sessions; the
-  // regular-session-end clamp would mark evening overnight bars as available too early.
-  if(/Longbridge/i.test(source))return candle.time+seconds[interval]+delay;
+  // Longbridge minute/hour bars are start-labelled across Pre/Intraday/Post/Overnight
+  // without the 15-minute public delay; 1h bars split at regular-session open/close.
+  if(market==='us'&&/Longbridge/i.test(source)) {
+    let end=candle.time+seconds[interval];
+    if(interval==='1h'&&session.segments.length) {
+      const open=session.segments[0].start;
+      if(c.minute<open&&c.minute+60>open)end=Math.min(end,localEpoch(c.date,open,market));
+      if(c.minute<close&&c.minute+60>close)end=Math.min(end,localEpoch(c.date,close,market));
+    }
+    return end+delay;
+  }
   return Math.min(candle.time+seconds[interval],localEpoch(c.date,close,market))+delay;
 }
 

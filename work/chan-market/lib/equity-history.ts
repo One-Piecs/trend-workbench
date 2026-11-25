@@ -1,5 +1,5 @@
 import type { Candle, MarketData } from './market-types';
-import { candleAvailableAt } from './timeframe-context.ts';
+import { candleAvailableAt, candleDelaySeconds } from './timeframe-context.ts';
 
 function validCandle(c:Candle):boolean {
   return [c.time,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)
@@ -12,8 +12,7 @@ function validCandle(c:Candle):boolean {
 function coveredThrough(data:MarketData):number {
   const last=data.candles.at(-1)!;
   const available=candleAvailableAt(last,data.instrument.market,data.interval,data.source);
-  const delay=data.interval==='1M'?0:data.instrument.market==='cn'?120:900;
-  return available-delay;
+  return available-candleDelaySeconds(data.instrument.market,data.interval,data.source);
 }
 
 /** Select one complete, coherent provider response; never splice prices or

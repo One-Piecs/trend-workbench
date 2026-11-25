@@ -1,8 +1,8 @@
-import {commoditySessionOpen,COMMODITY_DELAY_SECONDS} from './commodity-session.ts';
+import {commoditySessionOpen} from './commodity-session.ts';
 import type { Candle, MarketData } from './market-types';
 import { compatibleMarketFeeds } from './higher-from-primary.ts';
 import { forecastBarStart } from './forecast-journal.ts';
-import { candleAvailableAt, exchangeClock } from './timeframe-context.ts';
+import { candleAvailableAt, candleDelaySeconds, exchangeClock } from './timeframe-context.ts';
 
 export type IntrabarUnknown = 'missing-minutes'|'incompatible-source'|'incomplete-minutes'|'inconsistent-ohlc'|'same-minute'|'unsupported-period';
 type MinuteResult = {resolution:IntrabarUnknown}|{resolution:'minute';reason:'stop'|'gap-stop'|'target2';price:number;availableAt:number};
@@ -23,7 +23,7 @@ export function createMinuteExitResolver(primary:MarketData,minute?:MarketData) 
     if(market!=='crypto'&&['1w','1M'].includes(interval))return {resolution:'unsupported-period'};
     if(!minute)return {resolution:'missing-minutes'};
     if(!sameFeed)return {resolution:'incompatible-source'};
-    const delay=market==='commodity'?COMMODITY_DELAY_SECONDS:market==='cn'?120:market==='us'?900:0;
+    const delay=candleDelaySeconds(market,interval,primary.source);
     const start=forecastBarStart(parent,primary),end=candleAvailableAt(parent,market,interval,primary.source)-delay;
     if(start%60!==0||end%60!==0||end<=start||end-start>31*86400)return {resolution:'unsupported-period'};
     let localStart=0,endLabel=false;

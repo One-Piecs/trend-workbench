@@ -80,3 +80,11 @@ test('opening grace retains prior-day history but never permits old entry alerts
   const now='2026-11-13T14:31:00Z',health=getFeedHealth(data(now,'2026-11-12T20:59:00Z','us'),{nowMs:ms(now),lastSuccessAtMs:ms(now)});
   assert.equal(health.state,'delayed');assert.equal(health.allowSignals,false);
 });
+test('Longbridge real-time US feed expects zero delay instead of the 15-minute public delay',()=>{
+  const now='2026-11-13T15:20:00Z',src='Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const fresh=getFeedHealth(data(now,'2026-11-13T15:19:00Z','us','1m',src),{nowMs:ms(now),lastSuccessAtMs:ms(now)});
+  assert.equal(fresh.expectedDelayMs,0);
+  assert.equal(fresh.state,'fresh');
+  const stale=getFeedHealth(data(now,'2026-11-13T15:10:00Z','us','1m',src),{nowMs:ms(now),lastSuccessAtMs:ms(now)});
+  assert.equal(stale.state,'stale');
+});

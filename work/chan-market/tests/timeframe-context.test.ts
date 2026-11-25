@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {candleAvailableAt,eligibleHigherCandles,higherInterval} from '../lib/timeframe-context.ts';
+import {candleAvailableAt,candleDelaySeconds,eligibleHigherCandles,higherInterval} from '../lib/timeframe-context.ts';
 import type {Candle,MarketData} from '../lib/market-types';
 const epoch=(iso:string)=>Date.parse(iso)/1000;
 const at=(iso:string)=>({time:epoch(iso)});
@@ -40,4 +40,26 @@ test('Thanksgiving half-day bars become available after the early close and repo
   for(const [interval,start] of [['1h','2026-11-27T12:30-05:00'],['4h','2026-11-27T09:30-05:00'],['1d','2026-11-27T09:30-05:00'],['1w','2026-11-23T09:30-05:00']] as const){
     assert.equal(candleAvailableAt(at(start),'us',interval,'Yahoo Finance'),epoch('2026-11-27T13:15-05:00'));
   }
+});
+test('candleDelaySeconds distinguishes real-time Longbridge US feeds from delayed public feeds',()=>{
+  assert.equal(candleDelaySeconds('crypto','1m','Binance'),0);
+  assert.equal(candleDelaySeconds('commodity','1M','Yahoo Finance'),900);
+  assert.equal(candleDelaySeconds('cn','1m','东方财富'),120);
+  assert.equal(candleDelaySeconds('cn','1M','东方财富'),0);
+  assert.equal(candleDelaySeconds('us','1m','Yahoo Finance'),900);
+  assert.equal(candleDelaySeconds('us','1h','东方财富'),900);
+  assert.equal(candleDelaySeconds('us','1M','Yahoo Finance'),0);
+  assert.equal(candleDelaySeconds('us','1m','Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com'),0);
+  assert.equal(candleDelaySeconds('us','1h','Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com'),0);
+});
+test('Longbridge US bars confirm at bar boundaries across overnight, pre/post and split 1h sessions without 15m lag',()=>{
+  const src='Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  assert.equal(candleAvailableAt(at('2026-11-24T20:30-05:00'),'us','1m',src),epoch('2026-11-24T20:31-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-25T01:30-05:00'),'us','1m',src),epoch('2026-11-25T01:31-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-24T08:00-05:00'),'us','1h',src),epoch('2026-11-24T09:00-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-24T09:00-05:00'),'us','1h',src),epoch('2026-11-24T09:30-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-24T15:30-05:00'),'us','1h',src),epoch('2026-11-24T16:00-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-27T12:30-05:00'),'us','1h',src),epoch('2026-11-27T13:00-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-24T16:00-05:00'),'us','1h',src),epoch('2026-11-24T17:00-05:00'));
+  assert.equal(candleAvailableAt(at('2026-11-24T20:00-05:00'),'us','1h',src),epoch('2026-11-24T21:00-05:00'));
 });

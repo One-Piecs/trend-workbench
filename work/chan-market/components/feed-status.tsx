@@ -3,7 +3,7 @@ import {useEffect,useState} from 'react';
 import type {Candle,MarketData} from '@/lib/market-types';
 import type {MarketForecast} from '@/lib/forecast-types';
 import type {FeedHealth} from '@/lib/feed-health';
-import {candleAvailableAt} from '@/lib/timeframe-context';
+import {candleAvailableAt,candleDelaySeconds} from '@/lib/timeframe-context';
 import {useLanguage} from '@/lib/language';
 import {marketDisplayText} from '@/lib/market-i18n';
 import {priceText} from './terminal-chart';
@@ -14,7 +14,7 @@ export default function FeedStatus({data,displayBar,forecast,health,replay=false
   const last=displayBar??data?.candles.at(-1),crypto=data?.instrument.market==='crypto';
   // Availability includes provider delays; countdown labels the candle boundary,
   // while the feed detail separately states the delay and confirmation latency.
-  const end=last&&data?candleAvailableAt(last,data.instrument.market,data.interval,data.source)-(crypto?0:data.instrument.market==='cn'?120:900):null;
+  const end=last&&data?candleAvailableAt(last,data.instrument.market,data.interval,data.source)-candleDelaySeconds(data.instrument.market,data.interval,data.source):null;
   const remaining=end===null?0:Math.max(0,Math.ceil(end-now/1000));
   const duration=(s:number)=>s>=86400?`${Math.floor(s/86400)}${t('天','d')} ${Math.floor(s%86400/3600)}${t('小时','h')}`:`${Math.floor(s/3600).toString().padStart(2,'0')}:${Math.floor(s%3600/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
   const directional=forecast&&forecast.direction!=='neutral'?forecast[forecast.direction]:null;

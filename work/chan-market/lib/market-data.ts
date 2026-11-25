@@ -9,7 +9,7 @@ export { latestHistoryGap } from './history-gaps.ts';
 export { getJournalMinutes } from './journal-minute-feed.ts';
 import { aggregateEquityFourHour } from './equity-four-hour.ts';
 import { equityExchangeClock, equitySessionOn } from './equity-calendar.ts';
-import { candleAvailableAt } from './timeframe-context.ts';
+import { candleAvailableAt, candleDelaySeconds } from './timeframe-context.ts';
 import { chooseEquityHistory } from './equity-history.ts';
 import { withHistoryCoverage } from './history-coverage.ts';
 import { COMMODITY_INSTRUMENTS, searchCommodities } from './commodity-catalog.ts';
@@ -266,12 +266,12 @@ async function usHints(q: string) {
   return cached(`tencent-us:${q.toUpperCase()}`, 30*60000, async () => (await tencentHints(q.replace(/-/g,'.'),'us')).map(usHint).filter((x): x is NonNullable<typeof x> => !!x));
 }
 /** Calendar bars close conservatively. Monthly bars are confirmed only after local month-end. */
-export function stockBarClosed(time: number, interval: Interval, market: 'cn' | 'us', now = Date.now() / 1000, sessionEnd?: number): boolean {
+export function stockBarClosed(time: number, interval: Interval, market: 'cn' | 'us', now = Date.now() / 1000, sessionEnd?: number, source = ''): boolean {
   if (!Number.isFinite(time) || !Number.isFinite(now)) return false;
-  let available=candleAvailableAt({time},market,interval);
+  let available=candleAvailableAt({time},market,interval,source);
   if(market==='us'&&!isCalendarBar(interval)&&sessionEnd&&sessionEnd>time&&
     equityExchangeClock('us',sessionEnd).date===equityExchangeClock('us',time).date){
-    available=Math.min(available,sessionEnd+900);
+    available=Math.min(available,sessionEnd+candleDelaySeconds(market,interval,source));
   }
   return now>=available;
 }
@@ -453,6 +453,7 @@ const LONGBRIDGE_PERIODS: Partial<Record<Interval, string>> = { '1m': '1m', '5m'
 const LONGBRIDGE_SESSIONS = new Set(['Intraday', 'Pre', 'Post', 'Overnight']);
 const LONGBRIDGE_SESSION_LABELS: Record<string, Candle['session']> = { Intraday: 'regular', Pre: 'pre', Post: 'post', Overnight: 'overnight' };
 const LONGBRIDGE_EXCHANGES: Record<string, string> = { NASD: 'NASDAQ', NYSE: 'NYSE', AMEX: 'NYSE American' };
+const LONGBRIDGE_SOURCE = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
 // GUI-launched macOS apps inherit a minimal PATH; Homebrew locations are tried explicitly.
 const LONGBRIDGE_BINARIES = ['longbridge', '/opt/homebrew/bin/longbridge', '/usr/local/bin/longbridge'];
 let longbridgeBinaryIndex = 0;
@@ -497,7 +498,7 @@ export function parseLongbridgeCandles(rows: unknown, interval: Interval, now = 
     const time = Date.parse(String(record.time ?? '')) / 1000;
     if (!Number.isFinite(time) || time % 60 !== 0) continue;
     sessions[record.session] = (sessions[record.session] ?? 0) + 1;
-    list.push({ time, open: Number(record.open), high: Number(record.high), low: Number(record.low), close: Number(record.close), volume: Number(record.volume), closed: stockBarClosed(time, interval, 'us', now), session: LONGBRIDGE_SESSION_LABELS[record.session] });
+    list.push({ time, open: Number(record.open), high: Number(record.high), low: Number(record.low), close: Number(record.close), volume: Number(record.volume), closed: stockBarClosed(time, interval, 'us', now, undefined, LONGBRIDGE_SOURCE), session: LONGBRIDGE_SESSION_LABELS[record.session] });
   }
   return { candles: sanitizeCandles(list), sessions };
 }
@@ -523,20 +524,22 @@ async function longbridgeUsCandles(symbol: string, interval: Interval, limit: nu
   if (!period || !longbridgeOvernightEnabled()) throw new MarketError('Longbridge 夜盘行情源未启用或不支持该周期。', 503);
   if (longbridgeUnavailableUntil > Date.now()) throw new MarketError('Longbridge 夜盘行情源暂时不可用。', 503);
   const count = Math.min(1000, limit);
+  let now = Date.now() / 1000;
   let parsed: { candles: Candle[]; sessions: Record<string, number> };
   try {
-    parsed = parseLongbridgeCandles(JSON.parse(await longbridgeRun(['kline', `${symbol.replace(/-/g, '.')}.US`, '--period', period, '--count', String(count), '--session', 'all', '--format', 'json'])), interval);
+    const raw = JSON.parse(await longbridgeRun(['kline', `${symbol.replace(/-/g, '.')}.US`, '--period', period, '--count', String(count), '--session', 'all', '--format', 'json']));
+    now = Date.now() / 1000;
+    parsed = parseLongbridgeCandles(raw, interval, now);
   } catch (error) {
     if (!(error instanceof MarketError) || error.status !== 404) longbridgeUnavailableUntil = Date.now() + 5 * 60000;
     if (error instanceof MarketError) throw error;
     throw new MarketError('Longbridge 行情源返回格式异常。');
   }
   const candles = ensure(parsed.candles, 1).slice(-count);
-  const now = Date.now() / 1000;
   const info = await longbridgeStaticInfo(symbol);
   const warnings = [
     '已使用Longbridge官方行情，包含美股盘前、盘后及夜盘时段；夜盘成交稀薄，结构信号请结合正常时段确认。',
-    'K线为周期起点时间；最近K线延后15分钟确认，未完成尾部不参与收盘信号。',
+    'K线为周期起点时间；按实时行情在周期结束时确认收盘，未完成K线不参与收盘信号。',
     `本段含盘前${parsed.sessions.Pre ?? 0}根、盘后${parsed.sessions.Post ?? 0}根、夜盘${parsed.sessions.Overnight ?? 0}根K线。`,
   ];
   if (candles.length >= count) warnings.push('受单次最多1000根限制，纳入夜盘后覆盖的交易日更少，可与不含夜盘的来源对照。');
@@ -544,9 +547,9 @@ async function longbridgeUsCandles(symbol: string, interval: Interval, limit: nu
   return {
     instrument: instrument('us', symbol, info?.name ?? symbol, info?.exchange ?? 'US', 'USD'),
     interval, candles,
-    source: 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com',
+    source: LONGBRIDGE_SOURCE,
     asOf: new Date(now * 1000).toISOString(),
-    delayNotice: 'Longbridge行情 · America/New_York · 含盘前/盘后/夜盘 · K线为周期起点',
+    delayNotice: 'Longbridge实时行情 · America/New_York · 含盘前/盘后/夜盘 · K线为周期起点',
     adjustment: '不复权（原始价格）；成交量单位：股',
     warnings, availableIntervals: AVAILABLE_INTERVALS.us,
   };

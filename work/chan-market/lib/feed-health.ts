@@ -1,5 +1,5 @@
 import type { Interval, MarketData } from './market-types';
-import { exchangeClock } from './timeframe-context.ts';
+import { candleDelaySeconds, exchangeClock } from './timeframe-context.ts';
 import { equitySessionOn } from './equity-calendar.ts';
 import {commodityTradeDate,commoditySessionOpen,commodityRegularDate,COMMODITY_DELAY_SECONDS} from './commodity-session.ts';
 
@@ -32,7 +32,7 @@ export function getFeedHealth(data:MarketData|null,options:FeedHealthOptions):Fe
   const bars=data?.candles.filter(c=>Number.isFinite(c.time)&&Number.isFinite(c.close)&&(data.instrument.market==='commodity'||c.close>0))||[];
   const last=bars.at(-1),lastBarTimeMs=last?last.time*1000:null;
   const market=data?.instrument.market,interval=options.interval||data?.interval||'1h';
-  const expectedDelayMs=market==='commodity'?COMMODITY_DELAY_SECONDS*1000:market==='crypto'?0:market==='cn'?120000:market==='us'?900000:null;
+  const expectedDelayMs=market?candleDelaySeconds(market,interval==='1M'?'1d':interval,data?.source)*1000:null;
   const base={checkedAtMs:nowMs,lastSuccessAtMs,fetchedAtMs,quoteTimeMs:null,lastBarTimeMs,ageMs:lastBarTimeMs==null?null:Math.max(0,nowMs-lastBarTimeMs),expectedDelayMs};
   const result=(state:FeedHealthState,label:string,labelEn:string,detail:string,detailEn:string):FeedHealth=>({...base,state,allowSignals:state==='fresh'||state==='delayed',label,labelEn,detail,detailEn});
   if(options.error)return result('error','行情连接异常','Feed error',`最近一次获取失败：${options.error}；暂停新信号。`,'The latest fetch failed. New signals are paused until a successful, current response arrives.');

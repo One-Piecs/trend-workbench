@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { analyze } from '../lib/chan.ts';
 import { getCandles, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
 
 const cliRow = (time: string, session: string, open = 100) => ({ time, session, open: String(open), high: String(open + 2), low: String(open - 1), close: String(open + 1), volume: '500', turnover: '50000.000' });
@@ -74,8 +75,26 @@ test('enabled overnight source wins candidate selection and keeps overnight bars
     assert.deepEqual(calls.find(args => args[0] === 'kline'), ['kline', 'TSLA.US', '--period', '1h', '--count', '100', '--session', 'all', '--format', 'json']);
     assert.equal(result.candles.some(c => c.time === Date.parse('2026-11-23T05:45:00Z') / 1000), true);
     assert.ok(result.warnings.some(w => w.includes('夜盘')));
+    assert.ok(result.warnings.some(w => w.includes('周期结束时确认收盘')));
+    assert.ok(!result.warnings.some(w => w.includes('延后15分钟')));
     assert.ok(result.warnings.some(w => w.includes('盘前1根')));
   } finally { restoreFetch(); setLongbridgeRunnerDefault(); }
+});
+
+test('real-time Longbridge 1m candles confirm at bar close so MACD reaches the latest closed bar', () => {
+  // 01:30:20Z is 20:30:20 EST (evening overnight after 16:00 regular close).
+  const now = Date.parse('2026-11-25T01:30:20Z') / 1000;
+  const start = Date.parse('2026-11-25T00:51:00Z') / 1000;
+  const rows = Array.from({ length: 40 }, (_, i) =>
+    cliRow(new Date((start + i * 60) * 1000).toISOString(), 'Overnight', 65 + i * 0.1));
+  const { candles } = parseLongbridgeCandles(rows, '1m', now);
+  assert.equal(candles.length, 40);
+  // Every bar up to 01:29:00Z (ended at 01:30:00Z) is closed; only the forming 01:30:00Z bar is open.
+  assert.equal(candles.slice(0, -1).every(c => c.closed === true), true);
+  assert.equal(candles.at(-1)?.time, Date.parse('2026-11-25T01:30:00Z') / 1000);
+  assert.equal(candles.at(-1)?.closed, false);
+  const analysis = analyze(candles, { skipCalibration: true, skipTradePlans: true });
+  assert.equal(analysis.macd.at(-1)?.time, candles.at(-2)?.time);
 });
 
 test('dashed symbols are converted to the Longbridge dot format', async () => {

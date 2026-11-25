@@ -85,3 +85,11 @@ test('invalid or unsorted histories are not made attractive by a fictitious late
   const unsorted=feed([recent(),bar('2026-11-12T13:30:00-05:00')]);
   assert.equal(chooseEquityHistory([invalid,unsorted,good]),good);
 });
+
+test('real-time Longbridge feed is not penalized by 900s against Yahoo during regular US hours',()=>{
+  const stamps=['2026-11-13T10:00:00-05:00','2026-11-13T10:01:00-05:00','2026-11-13T10:02:00-05:00'];
+  const longbridge=feed(stamps.map((s,i)=>bar(s,100+i,i<2)),{interval:'1m',source:'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com'});
+  const yahoo=feed(stamps.map((s,i)=>bar(s,100+i,false)),{interval:'1m',source:'Yahoo Finance 网页行情 · query1.finance.yahoo.com'});
+  assert.equal(chooseEquityHistory([yahoo,longbridge]),longbridge);
+  assert.equal(chooseEquityHistory([longbridge,yahoo]),longbridge);
+});
