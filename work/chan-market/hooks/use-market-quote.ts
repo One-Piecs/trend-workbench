@@ -44,7 +44,8 @@ export function useMarketQuote(data:MarketData|null, enabled:boolean, clock:numb
           }
         }
         setFrame({key,status:body.status,checkedAt,sequence});
-        intervalMs=body.status==='quote'?5000:body.status==='stale'?10000:body.status==='closed'||body.status==='unconfigured'?60000:30000;
+        const quoteSession=body.status==='quote'&&body.quote&&typeof body.quote==='object'?(body.quote as {session?:unknown}).session:undefined;
+        intervalMs=body.status==='quote'?(quoteSession==='overnight'?8000:5000):body.status==='stale'?10000:body.status==='closed'||body.status==='unconfigured'?60000:30000;
       }catch{
         if(request===current)setFrame({key,status:'unavailable',checkedAt:Date.now(),sequence});
       }finally{

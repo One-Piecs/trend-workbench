@@ -29,6 +29,7 @@ import {useDirectionScorecard} from '@/hooks/use-direction-scorecard';
 import DirectionScorecard from '@/components/direction-scorecard';
 import {useLiveCandles} from '@/hooks/use-live-candles';
 import {useMarketQuote} from '@/hooks/use-market-quote';
+import type {QuoteSession} from '@/lib/quote-overlay';
 import {useEarlierHistory} from '@/hooks/use-earlier-history';
 import {emptyBars} from '@/lib/earlier-history';
 import {endAtTime} from '@/lib/chart-viewport';
@@ -281,7 +282,11 @@ function HomeContent(){
   const snapshotTail=quoteCandles.at(-1);
   const last=supplemental.candle??snapshotTail;
   const prior=supplemental.candle&&snapshotTail&&supplemental.candle.time>snapshotTail.time?snapshotTail:quoteCandles.at(-2);
-  const change=last&&prior&&prior.close!==0?(last.close-prior.close)/Math.abs(prior.close)*100:0;
+  const useLongbridgeHeadline=Boolean(live&&!supplemental.candle&&quote&&quote.provider==='longbridge'&&data?.source.startsWith('Longbridge '));
+  const headlinePrice=useLongbridgeHeadline?quote!.price:last?.close??null;
+  const headlinePrior=useLongbridgeHeadline?(snapshotTail?.closed===false?quoteCandles.at(-2):snapshotTail):prior;
+  const change=headlinePrice!==null&&headlinePrior&&headlinePrior.close!==0?(headlinePrice-headlinePrior.close)/Math.abs(headlinePrior.close)*100:0;
+  const quoteSessionLabel=(session?:QuoteSession)=>session==='pre'?t('盘前','Pre-market'):session==='regular'?t('盘中','Regular'):session==='post'?t('盘后','Post-market'):session==='overnight'?t('夜盘','Overnight'):null;
   const currentInstrument=data?{
     ...data.instrument,
     name:data.instrument.market==='cn'&&/^\d{6}(?:\.(?:SH|SZ|BJ))?$/i.test(data.instrument.name.trim())?selected.name:data.instrument.name,
@@ -369,7 +374,7 @@ function HomeContent(){
     <main className="workspace">
       <div className="workspace-grid">
         <section className={`chart-panel panel${focused?' chart-focused':''}`}>
-          <div className="quote-heading trading-quote"><div className="instrument-identity"><span className={`asset-big ${market}`}>{selected.symbol==='BTCUSDT'?'₿':selected.symbol==='ETHUSDT'?'Ξ':selected.symbol.slice(0,1)}</span><div><button className="instrument-selector" onClick={()=>setSearchOpen(true)}>{displaySymbol(currentInstrument.symbol)}<ChevronDown size={15}/></button><p>{instrumentName(currentInstrument.name)}<span>{marketVenueSuffix(currentInstrument.exchange,language)}{market==='commodity'&&!imported&&(' · '+(currentInstrument.symbol==='CL=F'?t('美元/桶','USD/bbl'):t('美元/盎司','USD/oz')))}</span></p></div><button className={`favorite-button ${watchlist.some(w=>w.id===selected.id)?'selected':''}`} disabled={imported} onClick={()=>star(selected)} aria-label={t("切换当前标的自选","Toggle watchlist")}><Star size={17} fill={watchlist.some(w=>w.id===selected.id)?'currentColor':'none'}/></button></div><div className="quote-price"><strong>{last?priceText(last.close):'—'}</strong><span className={change>=0?'positive':'negative'}>{last&&prior&&prior.close!==0?`${change>=0?'+':''}${change.toFixed(2)}%`:'—'} <small>{t("较前一根","vs previous bar")}</small></span></div>
+          <div className="quote-heading trading-quote"><div className="instrument-identity"><span className={`asset-big ${market}`}>{selected.symbol==='BTCUSDT'?'₿':selected.symbol==='ETHUSDT'?'Ξ':selected.symbol.slice(0,1)}</span><div><button className="instrument-selector" onClick={()=>setSearchOpen(true)}>{displaySymbol(currentInstrument.symbol)}<ChevronDown size={15}/></button><p>{instrumentName(currentInstrument.name)}<span>{marketVenueSuffix(currentInstrument.exchange,language)}{market==='commodity'&&!imported&&(' · '+(currentInstrument.symbol==='CL=F'?t('美元/桶','USD/bbl'):t('美元/盎司','USD/oz')))}</span></p></div><button className={`favorite-button ${watchlist.some(w=>w.id===selected.id)?'selected':''}`} disabled={imported} onClick={()=>star(selected)} aria-label={t("切换当前标的自选","Toggle watchlist")}><Star size={17} fill={watchlist.some(w=>w.id===selected.id)?'currentColor':'none'}/></button></div><div className="quote-price"><strong>{headlinePrice!==null?priceText(headlinePrice):'—'}</strong><span className={change>=0?'positive':'negative'}>{headlinePrice!==null&&headlinePrior&&headlinePrior.close!==0?`${change>=0?'+':''}${change.toFixed(2)}%`:'—'} <small>{t("较前一根","vs previous bar")}</small></span></div>
             <MarketBattle key={selectionKey} symbol={selected.symbol} market={selected.market} interval={interval}
               currency={currentInstrument.currency}
               chartPrice={quote?{price:quote.price,kind:quote.quality==='realtime'?'realtime':'public'}:
@@ -390,7 +395,7 @@ function HomeContent(){
           {data&&cached&&!replayActive&&!error&&<div className="source-quote-line" role="status">{t('正在显示本机保存的已完成K线，等待最新行情。','Showing completed candles saved on this computer while updating.')}</div>}
           {data&&(!cached||replayActive)&&(!error||replayActive)&&<FeedStatus data={data} displayBar={last} forecast={rawForecast} health={health} replay={replayActive} imported={imported}/>}
           {quote&&<div className="source-quote-line">
-            <strong>{quote.venue}{quote.contract&&' · '+quote.contract}</strong>
+            <strong>{quote.venue}{quote.session&&` · ${quoteSessionLabel(quote.session)}`}{quote.contract&&' · '+quote.contract}</strong>
             <span>{quote.quality==='realtime'?t('最新成交','Last trade'):t('最新报价','Latest quote')} {priceText(quote.price)}</span>
             <time dateTime={new Date(quote.time*1000).toISOString()}>{new Date(quote.time*1000).toLocaleTimeString(locale,{hour12:false})}</time>
             {quote.nativeCandle&&!quote.candle&&<span>{interval} · {t('开','O')} {priceText(quote.nativeCandle.open)}　{t('高','H')} {priceText(quote.nativeCandle.high)}　{t('低','L')} {priceText(quote.nativeCandle.low)}　{t('收','C')} {priceText(quote.nativeCandle.close)}</span>}

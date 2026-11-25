@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {advanceQuoteSequence,displayQuoteSequence,quotePeriodBounds,selectQuoteOverlay} from '../lib/quote-overlay.ts';
+import {advanceQuoteSequence,displayQuoteSequence,quotePeriodBounds,selectQuoteOverlay,usExtendedSessionInfo} from '../lib/quote-overlay.ts';
 import type {QuoteSequence,SourceQuote} from '../lib/quote-overlay.ts';
 import type {Candle,Interval,MarketData} from '../lib/market-types.ts';
 
@@ -239,4 +239,46 @@ test('price-only, ended intervals and authoritative closed REST candles cannot r
   const afterBoundary=poll(245,null);
   assert.equal(afterBoundary.quote?.price,105);
   assert.equal(afterBoundary.candle,undefined);
+});
+
+test('usExtendedSessionInfo classifies Sun overnight through Fri post and excludes weekends and holidays',()=>{
+  const cases=[
+    ['2026-11-22T19:59:00-05:00',null],
+    ['2026-11-22T20:00:00-05:00','overnight'],
+    ['2026-11-23T03:59:00-05:00','overnight'],
+    ['2026-11-23T04:00:00-05:00','pre'],
+    ['2026-11-23T09:30:00-05:00','regular'],
+    ['2026-11-23T16:00:00-05:00','post'],
+    ['2026-11-23T20:00:00-05:00','overnight'],
+    ['2026-11-25T21:00:00-05:00',null],
+    ['2026-11-26T10:00:00-05:00',null],
+    ['2026-11-27T13:00:00-05:00','post'],
+    ['2026-11-27T20:00:00-05:00',null],
+    ['2026-11-28T10:00:00-05:00',null],
+  ] as const;
+  for(const [iso,expected] of cases){
+    assert.equal(usExtendedSessionInfo(epoch(iso))?.session??null,expected,iso);
+  }
+});
+
+test('Longbridge extended quotes use observedAt freshness without fabricating candles and refresh sequence on newer polls',()=>{
+  const data={...snapshot('us','1m'),source:'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com',adjustment:'不复权（原始价格）；成交量单位：股'};
+  const nowSec=epoch('2026-11-23T21:05:00-05:00');
+  const tradeTime=nowSec-180;
+  const firstInput:SourceQuote={market:'us',symbol:'NVDA',currency:'USD',venue:'Longbridge OpenAPI',provider:'longbridge',quality:'realtime',session:'overnight',price:142.5,time:tradeTime,observedAt:nowSec};
+
+  const firstOverlay=selectQuoteOverlay(data,firstInput,nowSec*1000);
+  assert.deepEqual(firstOverlay,{price:142.5,time:tradeTime,observedAt:nowSec,venue:'Longbridge OpenAPI',provider:'longbridge',quality:'realtime',session:'overnight'});
+
+  let seq=advanceQuoteSequence(data,null,firstInput,nowSec*1000).sequence;
+  assert.equal(displayQuoteSequence(data,seq,nowSec*1000).quote?.price,142.5);
+
+  // Quiet overnight poll 8s later: same trade timestamp, fresh observedAt advances sequence
+  const secondInput:SourceQuote={...firstInput,price:142.6,observedAt:nowSec+8};
+  seq=advanceQuoteSequence(data,seq,secondInput,(nowSec+8)*1000).sequence;
+  assert.equal(displayQuoteSequence(data,seq,(nowSec+8)*1000).quote?.price,142.6);
+
+  // Stale observedAt (>60s) or session transition rejects the quote
+  assert.equal(selectQuoteOverlay(data,{...firstInput,observedAt:nowSec-61},nowSec*1000),null);
+  assert.equal(selectQuoteOverlay(data,firstInput,epoch('2026-11-24T04:00:05-05:00')*1000),null);
 });

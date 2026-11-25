@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze } from '../lib/chan.ts';
-import { getCandles, getOlderHistory, MarketError, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
+import { getCandles, getOlderHistory, getWorkbenchLiveQuote, MarketError, parseLongbridgeCandles, resetMarketNetworkFailures, setLongbridgeRunner, longbridgeOvernightEnabled } from '../lib/market-data.ts';
 
 const cliRow = (time: string, session: string, open = 100) => ({ time, session, open: String(open), high: String(open + 2), low: String(open - 1), close: String(open + 1), volume: '500', turnover: '50000.000' });
 const withEnv = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -355,6 +355,100 @@ test('kline history quota exhaustion and transient errors isolate history cooldo
       const liveTransient = await getCandles('us', 'COIN', '1m', 100);
       assert.ok(liveTransient.source.includes('Longbridge'));
       assert.equal(klineCalls, 2);
+    });
+  } finally { restoreFetch(); resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
+});
+
+test('getWorkbenchLiveQuote supports Longbridge all-session quotes, rejects stale extended timestamps, coalesces batches, and isolates 301606', async () => {
+  const lbSource = 'Longbridge OpenAPI 美股行情（含夜盘） · open.longbridge.com';
+  const lbAdjustment = '不复权（原始价格）；成交量单位：股';
+  const calls: string[][] = [];
+  let failQuote429 = false;
+  setLongbridgeRunner(async args => {
+    calls.push(args);
+    if (args[0] === 'static') return JSON.stringify([{ symbol: args[1], name: 'Test Equity', exchange: 'NASD', currency: 'USD' }]);
+    if (args[0] === 'quote') {
+      if (failQuote429) {
+        throw Object.assign(new Error('rate limited'), {
+          stdout: JSON.stringify({ error: { code: 301606, message: 'Request rate limit' } }),
+          stderr: '',
+        });
+      }
+      const tickers = args.slice(1, args.indexOf('--format'));
+      return JSON.stringify(tickers.map(ticker => {
+        if (ticker === 'MU.US') {
+          return {
+            symbol: ticker,
+            last: '110.00',
+            status: 'Normal',
+            pre_market: { last: '108.00', timestamp: '2026-11-20T13:00:00Z' }, // Previous day stale pre_market
+          };
+        }
+        return {
+          symbol: ticker,
+          last: '150.25',
+          status: 'Normal',
+          pre_market: { last: '149.10', timestamp: '2026-11-23T13:00:00Z' },
+          post_market: { last: '151.40', timestamp: '2026-11-23T22:15:00Z' },
+          overnight: { last: '152.00', timestamp: '2026-11-24T01:30:00Z' },
+        };
+      }));
+    }
+    return JSON.stringify(Array.from({ length: 12 }, (_, i) => cliRow(`2026-11-23T09:${String(i).padStart(2, '0')}:00Z`, 'Pre', 200 + i)));
+  });
+  const restoreFetch = failOtherSources();
+  try {
+    await withEnv(async () => {
+      const makeParams = (symbol: string) => new URLSearchParams({ market: 'us', symbol, interval: '1m', source: lbSource, adjustment: lbAdjustment });
+
+      const pre = await getWorkbenchLiveQuote(makeParams('PLTR'), Date.parse('2026-11-23T13:05:00Z')) as { status: string; quote?: { price: number; session?: string; provider?: string } };
+      assert.equal(pre.status, 'quote');
+      assert.equal(pre.quote?.session, 'pre');
+      assert.equal(pre.quote?.price, 149.1);
+      assert.equal(pre.quote?.provider, 'longbridge');
+
+      const reg = await getWorkbenchLiveQuote(makeParams('AMD'), Date.parse('2026-11-23T15:00:00Z')) as { status: string; quote?: { price: number; session?: string } };
+      assert.equal(reg.status, 'quote');
+      assert.equal(reg.quote?.session, 'regular');
+      assert.equal(reg.quote?.price, 150.25);
+
+      const post = await getWorkbenchLiveQuote(makeParams('SMCI'), Date.parse('2026-11-23T22:20:00Z')) as { status: string; quote?: { price: number; session?: string } };
+      assert.equal(post.status, 'quote');
+      assert.equal(post.quote?.session, 'post');
+      assert.equal(post.quote?.price, 151.4);
+
+      const overnight = await getWorkbenchLiveQuote(makeParams('AVGO'), Date.parse('2026-11-24T02:00:00Z')) as { status: string; quote?: { price: number; session?: string } };
+      assert.equal(overnight.status, 'quote');
+      assert.equal(overnight.quote?.session, 'overnight');
+      assert.equal(overnight.quote?.price, 152.0);
+
+      // Weekend stays closed without spawning CLI
+      const beforeClosed = calls.length;
+      const closed = await getWorkbenchLiveQuote(makeParams('INTC'), Date.parse('2026-11-21T15:00:00Z')) as { status: string };
+      assert.equal(closed.status, 'closed');
+      assert.equal(calls.length, beforeClosed);
+
+      // Stale previous-day pre_market timestamp is rejected outside regular session
+      const stale = await getWorkbenchLiveQuote(makeParams('MU'), Date.parse('2026-11-23T13:05:00Z')) as { status: string };
+      assert.equal(stale.status, 'stale');
+
+      // Concurrent quote calls coalesce into one batched CLI invocation
+      const beforeBatch = calls.length;
+      const [q1, q2] = await Promise.all([
+        getWorkbenchLiveQuote(makeParams('QCOM'), Date.parse('2026-11-24T02:00:00Z')) as Promise<{ status: string; quote?: { price: number } }>,
+        getWorkbenchLiveQuote(makeParams('TXN'), Date.parse('2026-11-24T02:00:00Z')) as Promise<{ status: string; quote?: { price: number } }>,
+      ]);
+      assert.equal(q1.status, 'quote');
+      assert.equal(q2.status, 'quote');
+      assert.equal(calls.length - beforeBatch, 1);
+      assert.deepEqual(calls[beforeBatch], ['quote', 'QCOM.US', 'TXN.US', '--format', 'json']);
+
+      // 301606 rate limit cools down quote only and never disables live kline
+      failQuote429 = true;
+      const limited = await getWorkbenchLiveQuote(makeParams('NFLX'), Date.parse('2026-11-24T02:00:00Z')) as { status: string };
+      assert.equal(limited.status, 'unavailable');
+      const liveAfter429 = await getCandles('us', 'NFLX', '1m', 100);
+      assert.ok(liveAfter429.source.includes('Longbridge'));
     });
   } finally { restoreFetch(); resetMarketNetworkFailures(); setLongbridgeRunnerDefault(); }
 });

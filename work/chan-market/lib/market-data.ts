@@ -17,6 +17,7 @@ import { getCommodityCandles } from './commodity-data.ts';
 import { commoditySessionOpen } from './commodity-session.ts';
 import { getChinaLiveQuote } from './cn-live-quote.ts';
 import { getLicensedLiveQuote } from './licensed-live-quote.ts';
+import { usExtendedSessionInfo, type QuoteSession } from './quote-overlay.ts';
 
 /** Read-only market data for the selected instrument. */
 export class MarketError extends Error {
@@ -45,6 +46,17 @@ let cnEastmoneyUnavailableUntil = 0;
 let longbridgeUnavailableUntil = 0;
 let longbridgeHistoryUnavailableUntil = 0;
 let longbridgeHistoryUnsupportedUntil = 0;
+let longbridgeQuoteUnavailableUntil = 0;
+interface LongbridgeExtendedSubQuote { last?: unknown; timestamp?: unknown }
+interface LongbridgeQuotePayload {
+  symbol?: unknown;
+  last?: unknown;
+  status?: unknown;
+  pre_market?: LongbridgeExtendedSubQuote;
+  post_market?: LongbridgeExtendedSubQuote;
+  overnight?: LongbridgeExtendedSubQuote;
+}
+const longbridgeQuoteCache = new Map<string, { expires: number; row: LongbridgeQuotePayload | null }>();
 /** A network-route change (sleep/wake, VPN switch) re-arms every provider cooldown, not only crypto. */
 export function resetMarketNetworkFailures() {
   resetCryptoSources();
@@ -54,6 +66,8 @@ export function resetMarketNetworkFailures() {
   longbridgeUnavailableUntil = 0;
   longbridgeHistoryUnavailableUntil = 0;
   longbridgeHistoryUnsupportedUntil = 0;
+  longbridgeQuoteUnavailableUntil = 0;
+  longbridgeQuoteCache.clear();
 }
 const cache = new Map<string, { expires: number; value: Promise<unknown> }>();
 async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
@@ -145,7 +159,7 @@ export function sanitizeCandles(rows: Candle[]): Candle[] {
   return [...new Map(valid.map(c => [c.time,c])).values()].sort((a,b) => a.time-b.time);
 }
 
-export async function getWorkbenchLiveQuote(params:URLSearchParams) {
+export async function getWorkbenchLiveQuote(params:URLSearchParams, nowMs = Date.now()) {
   const market=parseMarket(params.get('market')), interval=parseInterval(params.get('interval'),market);
   if(market==='crypto')throw new MarketError('加密货币使用独立推送通道。',400);
   const symbol=normalizeSymbol(market,params.get('symbol')??'');
@@ -154,22 +168,34 @@ export async function getWorkbenchLiveQuote(params:URLSearchParams) {
   if(source.length>200||adjustment.length>200||(contract&&
     (market!=='commodity'||!/^(?:GC|CL|SI)[FGHJKMNQUVXZ]\d{2}$/.test(contract)||!contract.startsWith(symbol.split('=')[0]))))
     throw new MarketError('报价参数有误。',400);
-  const seconds=Math.floor(Date.now()/1000);
-  let open:boolean;
-  if(market==='commodity')open=commoditySessionOpen(seconds);
+  const seconds=Math.floor(nowMs/1000);
+  let regularOpen:boolean;
+  if(market==='commodity')regularOpen=commoditySessionOpen(seconds);
   else{
     const clock=equityExchangeClock(market,seconds);
-    open=equitySessionOn(market,clock.date).segments.some(s=>clock.minute>=s.start&&clock.minute<s.end);
+    regularOpen=equitySessionOn(market,clock.date).segments.some(s=>clock.minute>=s.start&&clock.minute<s.end);
   }
+  const lbEnabled=market==='us'&&longbridgeOvernightEnabled()&&!symbol.startsWith('^');
+  const extended=lbEnabled?usExtendedSessionInfo(seconds):null;
   const identity={market,symbol,interval};
-  if(!open)return {...identity,status:'closed'};
+  if(!regularOpen&&!extended)return {...identity,status:'closed'};
   const key=JSON.stringify(['live-quote',market,symbol,interval,source,adjustment,contract]);
   return cached(key,3000,async()=>{
     if(market==='cn'){
-      const quote=await getChinaLiveQuote(symbol,fetch,Date.now(),{interval,source,adjustment});
+      const quote=await getChinaLiveQuote(symbol,fetch,nowMs,{interval,source,adjustment});
       return quote?{...identity,status:'quote',quote}:{...identity,status:'stale'};
     }
-    return {...identity,...await getLicensedLiveQuote(market,symbol,interval,{contract})};
+    if(market==='us'&&lbEnabled&&extended&&(source.startsWith('Longbridge ')||!regularOpen)){
+      const lbResult=parseLongbridgeLiveQuote(symbol,await fetchLongbridgeQuoteRow(symbol),nowMs);
+      if(lbResult.status==='quote'||!regularOpen)return {...identity,...lbResult};
+      return {...identity,...await getLicensedLiveQuote(market,symbol,interval,{contract,nowMs})};
+    }
+    const licensed=await getLicensedLiveQuote(market,symbol,interval,{contract,nowMs});
+    if(market==='us'&&licensed.status!=='quote'&&lbEnabled&&extended){
+      const lbResult=parseLongbridgeLiveQuote(symbol,await fetchLongbridgeQuoteRow(symbol),nowMs);
+      if(lbResult.status==='quote')return {...identity,...lbResult};
+    }
+    return {...identity,...licensed};
   });
 }
 
@@ -543,6 +569,112 @@ async function longbridgeStaticInfo(symbol: string): Promise<{ name: string; exc
     longbridgeStaticCache.set(key, info);
     return info;
   } catch { return undefined; }
+}
+
+const pendingLongbridgeQuotes = new Map<string, Array<(row: LongbridgeQuotePayload | null) => void>>();
+let longbridgeQuoteFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let longbridgeQuoteInFlight: Promise<void> = Promise.resolve();
+
+async function flushLongbridgeQuoteBatch() {
+  const batch = [...pendingLongbridgeQuotes.entries()].slice(0, 50);
+  if (!batch.length) return;
+  for (const [ticker] of batch) pendingLongbridgeQuotes.delete(ticker);
+  if (pendingLongbridgeQuotes.size > 0 && !longbridgeQuoteFlushTimer) {
+    longbridgeQuoteFlushTimer = setTimeout(() => {
+      longbridgeQuoteFlushTimer = null;
+      longbridgeQuoteInFlight = longbridgeQuoteInFlight.catch(() => {}).then(flushLongbridgeQuoteBatch);
+    }, 40);
+    longbridgeQuoteFlushTimer.unref?.();
+  }
+  const now = Date.now();
+  if (longbridgeQuoteUnavailableUntil > now) {
+    for (const [, waiters] of batch) for (const resolve of waiters) resolve(null);
+    return;
+  }
+  const toFetch: [string, Array<(row: LongbridgeQuotePayload | null) => void>][] = [];
+  for (const [ticker, waiters] of batch) {
+    const hit = longbridgeQuoteCache.get(ticker);
+    if (hit && hit.expires > now) {
+      for (const resolve of waiters) resolve(hit.row);
+    } else {
+      toFetch.push([ticker, waiters]);
+    }
+  }
+  if (!toFetch.length) return;
+  try {
+    const raw = JSON.parse(await longbridgeRun(['quote', ...toFetch.map(([ticker]) => ticker), '--format', 'json'])) as unknown;
+    const rows = Array.isArray(raw) ? raw as LongbridgeQuotePayload[] : [];
+    const bySymbol = new Map<string, LongbridgeQuotePayload>();
+    for (const item of rows) {
+      if (item && typeof item.symbol === 'string') bySymbol.set(item.symbol.toUpperCase(), item);
+    }
+    const stamp = Date.now();
+    if (longbridgeQuoteCache.size > 200) {
+      for (const [k, v] of longbridgeQuoteCache) if (v.expires <= stamp) longbridgeQuoteCache.delete(k);
+      while (longbridgeQuoteCache.size > 200) longbridgeQuoteCache.delete(longbridgeQuoteCache.keys().next().value!);
+    }
+    for (const [ticker, waiters] of toFetch) {
+      const row = bySymbol.get(ticker) ?? null;
+      longbridgeQuoteCache.set(ticker, { expires: stamp + 3500, row });
+      for (const resolve of waiters) resolve(row);
+    }
+  } catch (error) {
+    if (error instanceof MarketError && error.status === 429) {
+      longbridgeQuoteUnavailableUntil = Date.now() + 30_000;
+    } else if (!(error instanceof MarketError) || error.status !== 404) {
+      longbridgeQuoteUnavailableUntil = Date.now() + 60_000;
+    }
+    for (const [, waiters] of toFetch) for (const resolve of waiters) resolve(null);
+  }
+}
+
+async function fetchLongbridgeQuoteRow(symbol: string): Promise<LongbridgeQuotePayload | null> {
+  const now = Date.now();
+  if (longbridgeQuoteUnavailableUntil > now) return null;
+  const ticker = `${symbol.replace(/-/g, '.')}.US`.toUpperCase();
+  const hit = longbridgeQuoteCache.get(ticker);
+  if (hit && hit.expires > now) return hit.row;
+  return new Promise(resolve => {
+    const existing = pendingLongbridgeQuotes.get(ticker);
+    if (existing) existing.push(resolve);
+    else pendingLongbridgeQuotes.set(ticker, [resolve]);
+    if (!longbridgeQuoteFlushTimer) {
+      longbridgeQuoteFlushTimer = setTimeout(() => {
+        longbridgeQuoteFlushTimer = null;
+        longbridgeQuoteInFlight = longbridgeQuoteInFlight.catch(() => {}).then(flushLongbridgeQuoteBatch);
+      }, 40);
+      longbridgeQuoteFlushTimer.unref?.();
+    }
+  });
+}
+
+export function parseLongbridgeLiveQuote(symbol: string, row: LongbridgeQuotePayload | null, nowMs = Date.now()):
+  | { status: 'closed' | 'stale' | 'unavailable' }
+  | { status: 'quote'; quote: { market: 'us'; symbol: string; currency: 'USD'; time: number; observedAt: number; price: number; venue: 'Longbridge OpenAPI'; provider: 'longbridge'; quality: 'realtime'; session: QuoteSession } } {
+  const nowSec = Math.floor(nowMs / 1000);
+  const active = usExtendedSessionInfo(nowSec);
+  if (!active) return { status: 'closed' };
+  if (!row) return { status: 'unavailable' };
+  if (active.session === 'regular') {
+    if (typeof row.status === 'string' && row.status && !/normal/i.test(row.status)) return { status: 'unavailable' };
+    const price = Number(row.last);
+    if (!Number.isFinite(price) || price <= 0) return { status: 'unavailable' };
+    return {
+      status: 'quote',
+      quote: { market: 'us', symbol, currency: 'USD', time: nowSec, observedAt: nowSec, price, venue: 'Longbridge OpenAPI', provider: 'longbridge', quality: 'realtime', session: 'regular' },
+    };
+  }
+  const sub = active.session === 'pre' ? row.pre_market : active.session === 'post' ? row.post_market : row.overnight;
+  if (!sub) return { status: 'stale' };
+  const price = Number(sub.last);
+  const tradeTime = typeof sub.timestamp === 'string' ? Math.floor(Date.parse(sub.timestamp) / 1000) : NaN;
+  if (!Number.isFinite(price) || price <= 0 || !Number.isSafeInteger(tradeTime) || tradeTime < active.start - 60 || tradeTime > nowSec + 5) {
+    return { status: 'stale' };
+  }
+  return {
+    status: 'quote',
+    quote: { market: 'us', symbol, currency: 'USD', time: tradeTime, observedAt: nowSec, price, venue: 'Longbridge OpenAPI', provider: 'longbridge', quality: 'realtime', session: active.session },
+  };
 }
 async function longbridgeUsCandles(symbol: string, interval: Interval, limit: number): Promise<MarketData> {
   const period = LONGBRIDGE_PERIODS[interval];

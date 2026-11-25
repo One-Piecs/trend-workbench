@@ -4,6 +4,7 @@ import {breakoutBarContinuity} from './breakout-vwap.ts';
 import type {Candle, Interval, MarketData} from './market-types';
 
 export type QuoteMarket = 'cn' | 'us' | 'commodity';
+export type QuoteSession = 'pre' | 'regular' | 'post' | 'overnight';
 export type QuoteOhlcv = Pick<Candle, 'open'|'high'|'low'|'close'|'volume'>;
 export type QuoteQuality = 'observed' | 'realtime';
 export interface SourceQuote {
@@ -11,10 +12,12 @@ export interface SourceQuote {
   symbol: string;
   currency: string;
   time: number;
+  observedAt?: number;
   price: number;
   venue: string;
   provider?: string;
   quality?: QuoteQuality;
+  session?: QuoteSession;
   contract?: string;
   sessionBar?: QuoteOhlcv;
   bar?: QuoteOhlcv & {interval:Interval;start:number;end:number;provider?:string;priceBasis?:string};
@@ -22,8 +25,11 @@ export interface SourceQuote {
 export interface QuoteOverlay {
   price: number;
   time: number;
+  observedAt?: number;
   venue: string;
+  provider?: string;
   quality: QuoteQuality;
+  session?: QuoteSession;
   contract?: string;
   /** Native source bar displayed separately when its market coverage differs from the history. */
   nativeCandle?: Candle;
@@ -46,6 +52,42 @@ function exchangeEpoch(market:'cn'|'us', date:string, minute:number) {
   // DST offset on every regular trading date in both markets.
   const utcNoon = Date.parse(date+'T12:00:00Z')/1000;
   return utcNoon + 60*(minute-equityExchangeClock(market,utcNoon).minute);
+}
+
+/** Active US extended-hours window (Sun 20:00 ET overnight through Fri 20:00 ET post, excluding US holidays). */
+export function usExtendedSessionInfo(timeSec: number): { session: QuoteSession; start: number; end: number } | null {
+  if (!Number.isSafeInteger(timeSec) || timeSec <= 0 || timeSec > 253402300799) return null;
+  const { date, minute } = equityExchangeClock('us', timeSec);
+  if (!date || !Number.isFinite(minute)) return null;
+  const dayMs = Date.parse(`${date}T00:00:00Z`);
+  if (!Number.isFinite(dayMs)) return null;
+  const weekday = new Date(dayMs).getUTCDay();
+  const shiftIso = (delta: number) => new Date(dayMs + delta * day * 1000).toISOString().slice(0, 10);
+
+  if (weekday === 6) return null;
+  if (weekday === 0) {
+    if (minute < 1200) return null;
+    const nextDate = shiftIso(1);
+    if (equitySessionOn('us', nextDate).status === 'closed') return null;
+    return { session: 'overnight', start: exchangeEpoch('us', date, 1200), end: exchangeEpoch('us', nextDate, 240) };
+  }
+  if (minute < 240) {
+    if (equitySessionOn('us', date).status === 'closed') return null;
+    return { session: 'overnight', start: exchangeEpoch('us', shiftIso(-1), 1200), end: exchangeEpoch('us', date, 240) };
+  }
+  if (minute >= 1200) {
+    if (weekday === 5) return null;
+    const nextDate = shiftIso(1);
+    if (equitySessionOn('us', nextDate).status === 'closed') return null;
+    return { session: 'overnight', start: exchangeEpoch('us', date, 1200), end: exchangeEpoch('us', nextDate, 240) };
+  }
+  const session = equitySessionOn('us', date);
+  if (session.status === 'closed') return null;
+  const regStart = session.segments[0]?.start ?? 570;
+  const regEnd = session.segments.at(-1)?.end ?? 960;
+  if (minute < regStart) return { session: 'pre', start: exchangeEpoch('us', date, 240), end: exchangeEpoch('us', date, regStart) };
+  if (minute < regEnd) return { session: 'regular', start: exchangeEpoch('us', date, regStart), end: exchangeEpoch('us', date, regEnd) };
+  return { session: 'post', start: exchangeEpoch('us', date, regEnd), end: exchangeEpoch('us', date, 1200) };
 }
 
 function equityCalendarBounds(market:'cn'|'us', period:'1w'|'1M', date:string) {
@@ -180,7 +222,23 @@ export function selectQuoteOverlay(data:MarketData, input:unknown, nowMs=Date.no
   const {time,price,venue,contract}=input;
   const signed=market==='commodity'&&symbol==='CL=F';
   if(!finite(price)||(!signed&&price<=0)||!finite(time)||!Number.isSafeInteger(time)||!finite(nowMs)
-    ||time>nowMs/1000+2||nowMs/1000-time>maxAgeSeconds||typeof venue!=='string'||!venue.trim()||!correctListing(market,symbol,input))return null;
+    ||typeof venue!=='string'||!venue.trim()||!correctListing(market,symbol,input))return null;
+  if(market==='us'&&input.provider==='longbridge'){
+    const session=input.session;
+    if(session!=='pre'&&session!=='regular'&&session!=='post'&&session!=='overnight')return null;
+    const nowSec=Math.floor(nowMs/1000);
+    const active=usExtendedSessionInfo(nowSec);
+    if(!active||active.session!==session)return null;
+    const observedAt=finite(input.observedAt)&&Number.isSafeInteger(input.observedAt)?input.observedAt:time;
+    if(observedAt>nowSec+2||nowSec-observedAt>maxAgeSeconds)return null;
+    if(time<active.start-60||time>nowSec+5)return null;
+    return {
+      price,time,observedAt,venue,provider:'longbridge',
+      quality:input.quality==='realtime'?'realtime':'observed',
+      session,
+    };
+  }
+  if(time>nowMs/1000+2||nowMs/1000-time>maxAgeSeconds)return null;
   const bounds=quotePeriodBounds(market,data.interval,time);
   const current=quotePeriodBounds(market,data.interval,Math.floor(nowMs/1000));
   if(!bounds||!current||(market==='commodity'&&data.instrument.contract&&data.instrument.contract!==contract))return null;
@@ -227,6 +285,12 @@ export function advanceQuoteSequence(data:MarketData, previous:QuoteSequence|nul
   if(!next||previous&&next.time<previous.watermark)return {sequence:previous,reconcile:false};
   const native=next.nativeCandle,feed=next.nativeFeed;
   if(!native||!feed){
+    if(next.provider==='longbridge'&&next.observedAt!==undefined){
+      const prevInput=record(previous?.quote)?previous.quote:null;
+      const prevObserved=prevInput&&finite(prevInput.observedAt)?prevInput.observedAt:(previous?.watermark??-Infinity);
+      if(previous&&next.time===previous.watermark&&next.observedAt<=prevObserved)return {sequence:previous,reconcile:false};
+      return {sequence:{nativeByFeed:{},...previous,quote:input,watermark:next.time},reconcile:false};
+    }
     // A price alone cannot establish a new trade order for a tie or verify an OHLCV correction.
     if(previous&&next.time===previous.watermark)return {sequence:previous,reconcile:false};
     return {sequence:{nativeByFeed:{},...previous,quote:input,watermark:next.time},reconcile:false};
