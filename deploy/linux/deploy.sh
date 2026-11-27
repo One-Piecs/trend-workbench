@@ -7,6 +7,7 @@ SHA256_ARM64="71e427e28b78846f201d4d5ecc30cb13d1508ca099ef3871889a1256c7d6f67e"
 SHA256_X64="84d38715d449447117d05c3e71acd78daa49d5b1bfa8aacf610303920c3322be"
 
 port="${PORT:-44123}"
+hosts="${HOSTS:-}"
 node_dir="${NODE_DIR:-$HOME/.local/opt/node24}"
 service_name="${SERVICE_NAME:-trend-workbench}"
 force_ci=0
@@ -19,7 +20,8 @@ usage() {
 Usage: ./deploy/linux/deploy.sh [options]
 
 Options:
-  --port <port>       Loopback port for the server (1024..65535, default: 44123)
+  --port <port>       Port for the server (1024..65535, default: 44123)
+  --hosts <list>      Comma-separated bind IPs (default: 127.0.0.1 + Tailscale IPv4 if detected)
   --node-dir <dir>    Standalone Node.js 24 prefix/symlink (default: ~/.local/opt/node24)
   --service <name>    systemd --user service name (default: trend-workbench)
   --ci                Force `npm ci --prefix work/chan-market`
@@ -35,6 +37,11 @@ while [[ $# -gt 0 ]]; do
     --port)
       [[ $# -ge 2 ]] || { echo "Missing value for --port" >&2; exit 1; }
       port="$2"
+      shift 2
+      ;;
+    --hosts)
+      [[ $# -ge 2 ]] || { echo "Missing value for --hosts" >&2; exit 1; }
+      hosts="$2"
       shift 2
       ;;
     --node-dir)
@@ -191,6 +198,16 @@ unit_dir="$HOME/.config/systemd/user"
 unit_file="${unit_dir}/${service_name}.service"
 mkdir -p "$unit_dir"
 
+if [[ -z "$hosts" ]]; then
+  hosts="127.0.0.1"
+  if command -v tailscale >/dev/null 2>&1; then
+    tailscale_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$tailscale_ip" ]]; then
+      hosts="127.0.0.1,${tailscale_ip}"
+    fi
+  fi
+fi
+
 if [[ ! -f "$unit_file" || "$update_service" -eq 1 ]]; then
   cat > "$unit_file" <<EOF
 [Unit]
@@ -203,7 +220,7 @@ Type=simple
 WorkingDirectory=${root}
 Environment=PATH=${node_dir}/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
-ExecStart=${node_dir}/bin/node ${root}/outputs/shared/server.mjs --port ${port} --no-auto-exit
+ExecStart=${node_dir}/bin/node ${root}/outputs/shared/server.mjs --port ${port} --hosts ${hosts} --no-auto-exit
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -212,7 +229,7 @@ TimeoutStopSec=15
 [Install]
 WantedBy=default.target
 EOF
-  echo "Wrote ${unit_file}"
+  echo "Wrote ${unit_file} (hosts=${hosts})"
 else
   echo "Keeping existing ${unit_file} (pass --update-service to rewrite)"
 fi

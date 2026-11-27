@@ -129,7 +129,20 @@ const autoExit=!process.argv.includes('--no-auto-exit')&&process.env.TREND_WORKB
 const portIndex=process.argv.indexOf('--port');
 const requestedPort=portIndex<0?43127:Number(process.argv[portIndex+1]);
 if(!Number.isInteger(requestedPort)||(requestedPort!==0&&requestedPort<1024)||requestedPort>65535)throw new Error('Invalid local port');
+const hostsFlagIdx=(()=>{const a=process.argv.indexOf('--hosts');return a>=0?a:process.argv.indexOf('--host');})();
+const rawHosts=hostsFlagIdx>=0?process.argv[hostsFlagIdx+1]:(process.env.TREND_WORKBENCH_HOSTS||'');
+const listenHosts=(()=>{
+  const seen=new Set();
+  for(const part of String(rawHosts||'').split(',')){
+    const h=part.trim();
+    if(h)seen.add(h);
+  }
+  return seen.size>0?[...seen]:['127.0.0.1'];
+})();
+const formatHostHeader=h=>h.includes(':')&&!h.startsWith('[')?`[${h}]`:h;
 let port,origin;
+const allowedHosts=new Set();
+const allowedOrigins=new Set();
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.json':'application/json; charset=utf-8','.wav':'audio/wav','.txt':'text/plain; charset=utf-8'};
 const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
 const windows=new Set();
@@ -261,20 +274,25 @@ function shutdown(reason='No workbench windows remain. Stopping local service.')
   if(activeBacktestWorker){try{void activeBacktestWorker.terminate();}catch{}activeBacktestWorker=null;}
   void watchlistSync.stop();
   for(const window of windows)window.end();
-  server.closeAllConnections();
-  server.close(()=>{archive.close();process.exit(0);});
-  setTimeout(()=>{archive.close();process.exit(0);},1000).unref();
+  let remaining=servers.length;
+  const finish=()=>{archive.close();process.exit(0);};
+  if(remaining===0){finish();return;}
+  for(const srv of servers){
+    srv.closeAllConnections();
+    srv.close(()=>{remaining-=1;if(remaining===0)finish();});
+  }
+  setTimeout(finish,1000).unref();
 }
 function scheduleExit(ms){if(!autoExit)return;clearTimeout(exitTimer);exitTimer=setTimeout(()=>shutdown(),ms);}
 
-const server=http.createServer(async(req,res)=>{
+const requestHandler=async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('X-Frame-Options','DENY');
-  // Loopback binding and an exact Host/Origin prevent unrelated web pages from
-  // using the desktop service and its locally configured data feeds.
-  if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host||''))return json(res,403,{error:'Local host only'});
-  if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Local origin only'});
+  // Explicit host binding and exact Host/Origin check prevent unrelated web pages
+  // from using the local service and its configured data feeds.
+  if(!allowedHosts.has(req.headers.host||''))return json(res,403,{error:'Local host only'});
+  if(req.headers.origin&&!allowedOrigins.has(req.headers.origin))return json(res,403,{error:'Local origin only'});
   try{
     const url=new URL(req.url||'/',origin);
     const allowedMethod=req.method==='GET'||req.method==='HEAD'||(req.method==='PUT'&&url.pathname==='/api/watchlist')||(req.method==='POST'&&url.pathname==='/api/validation/run');
@@ -468,16 +486,45 @@ const server=http.createServer(async(req,res)=>{
     const status=error instanceof MarketError?error.status:502;
     json(res,status,{error:error instanceof Error?error.message:'本机服务暂时无法取得行情。'});
   }
-});
-server.requestTimeout=150000;
-server.headersTimeout=15000;
-server.on('error',error=>{console.error(error.code||error.message);process.exitCode=1;});
-server.listen(requestedPort,'127.0.0.1',()=>{
-  port=server.address().port;
-  origin=`http://127.0.0.1:${port}`;
-  if(process.argv.includes('--announce-ready'))console.log(`TREND_WORKBENCH_READY ${port}`);
-  console.log(`Trend Workbench ${origin} · pid ${process.pid}`);
-  watchlistSync.start();
-  scheduleExit(90000);
-});
+};
+const servers=[];
+function listenOnHost(host,bindPort){
+  return new Promise((resolve,reject)=>{
+    const srv=http.createServer(requestHandler);
+    srv.requestTimeout=150000;
+    srv.headersTimeout=15000;
+    srv.once('error',reject);
+    srv.listen(bindPort,host,()=>{
+      srv.removeListener('error',reject);
+      srv.on('error',error=>{console.error(error.code||error.message);process.exitCode=1;});
+      servers.push(srv);
+      resolve(srv.address().port);
+    });
+  });
+}
+(async()=>{
+  try{
+    port=await listenOnHost(listenHosts[0],requestedPort);
+    for(const host of listenHosts.slice(1)){
+      await listenOnHost(host,port);
+    }
+    origin=`http://127.0.0.1:${port}`;
+    allowedHosts.add(`127.0.0.1:${port}`);
+    allowedHosts.add(`localhost:${port}`);
+    allowedOrigins.add(`http://127.0.0.1:${port}`);
+    allowedOrigins.add(`http://localhost:${port}`);
+    for(const host of listenHosts){
+      const hdrHost=formatHostHeader(host);
+      allowedHosts.add(`${hdrHost}:${port}`);
+      allowedOrigins.add(`http://${hdrHost}:${port}`);
+    }
+    if(process.argv.includes('--announce-ready'))console.log(`TREND_WORKBENCH_READY ${port}`);
+    console.log(`Trend Workbench ${origin} (hosts: ${listenHosts.join(', ')}) · pid ${process.pid}`);
+    watchlistSync.start();
+    scheduleExit(90000);
+  }catch(error){
+    console.error(error?.code||error?.message||String(error));
+    process.exit(1);
+  }
+})();
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>shutdown(`Received ${signal}. Stopping local service.`));

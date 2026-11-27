@@ -412,3 +412,19 @@ test('desktop hub.env connects to remote or local longbridge-hub URLs, supports 
     await rm(envDir,{recursive:true,force:true});
   }
 });
+
+test('server supports --hosts for multi-IP binding and enforces Host/Origin allowlist',async()=>{
+  const dir=await stageServer();
+  const srv=await startServer(dir,{args:['--hosts','127.0.0.1,::1','--no-auto-exit']});
+  try{
+    const okRes=await sendHttp(srv.port,'/health',{Host:`[::1]:${srv.port}`,Origin:`http://[::1]:${srv.port}`});
+    assert.equal(okRes.status,200);
+    const badHost=await sendHttp(srv.port,'/health',{Host:`evil.example:${srv.port}`});
+    assert.equal(badHost.status,403);
+    const badOrigin=await sendHttp(srv.port,'/health',{Host:`127.0.0.1:${srv.port}`,Origin:`http://evil.example:${srv.port}`});
+    assert.equal(badOrigin.status,403);
+  }finally{
+    await srv.stop();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
