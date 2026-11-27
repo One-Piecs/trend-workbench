@@ -273,7 +273,7 @@ function HomeContent(){
   else if(imported) battleMode='imported';
   else if(cached) battleMode='cached';
   else if(!data||error||health.state==='stale'||health.state==='error'||health.state==='unknown') battleMode='unavailable';
-  else if(health.state==='closed') battleMode='closed';
+  else if(health.state==='closed'&&!quote?.session&&!push.streaming) battleMode='closed';
   useEffect(()=>{
     if(!live||!data||!rawForecast||loading||['error','stale','unknown'].includes(health.state))return;
     if(journalReady)observe(data,rawForecast,health.allowSignals);
@@ -382,7 +382,7 @@ function HomeContent(){
         <section className={`chart-panel panel${focused?' chart-focused':''}`}>
           <div className="quote-heading trading-quote"><div className="instrument-identity"><span className={`asset-big ${market}`}>{selected.symbol==='BTCUSDT'?'₿':selected.symbol==='ETHUSDT'?'Ξ':selected.symbol.slice(0,1)}</span><div><button className="instrument-selector" onClick={()=>setSearchOpen(true)}>{displaySymbol(currentInstrument.symbol)}<ChevronDown size={15}/></button><p>{instrumentName(currentInstrument.name)}<span>{marketVenueSuffix(currentInstrument.exchange,language)}{market==='commodity'&&!imported&&(' · '+(currentInstrument.symbol==='CL=F'?t('美元/桶','USD/bbl'):t('美元/盎司','USD/oz')))}</span></p></div><button className={`favorite-button ${watchlist.some(w=>w.id===selected.id)?'selected':''}`} disabled={imported} onClick={()=>star(selected)} aria-label={t("切换当前标的自选","Toggle watchlist")}><Star size={17} fill={watchlist.some(w=>w.id===selected.id)?'currentColor':'none'}/></button></div><div className="quote-price"><strong>{headlinePrice!==null?priceText(headlinePrice):'—'}</strong><span className={change>=0?'positive':'negative'}>{headlinePrice!==null&&headlinePrior&&headlinePrior.close!==0?`${change>=0?'+':''}${change.toFixed(2)}%`:'—'} <small>{t("较前一根","vs previous bar")}</small></span></div>
             <MarketBattle key={selectionKey} symbol={selected.symbol} market={selected.market} interval={interval}
-              currency={currentInstrument.currency}
+              currency={currentInstrument.currency} session={live?quote?.session:undefined}
               chartPrice={quote?{price:quote.price,kind:quote.quality==='realtime'?'realtime':'public'}:
                 data&&last?{price:last.close,kind:push.streaming?'realtime':'candle'}:null}
               analysis={data&&battleMode!=='unavailable'?rawAnalysis:null} forecast={rawForecast} mode={battleMode}/>

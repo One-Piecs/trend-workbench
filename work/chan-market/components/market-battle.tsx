@@ -9,12 +9,13 @@ import BattleArena from './battle-arena';
 import {useBattleFeed} from './use-battle-feed';
 import type {Analysis,Interval,Market} from '@/lib/market-types';
 import type {MarketForecast} from '@/lib/forecast-types';
+import type {QuoteSession} from '@/lib/quote-overlay';
 import BattleScenarios,{type BattleMode} from './battle-scenarios';
 import {priceText} from './terminal-chart';
 
 interface Props {
   market:Market; symbol:string; interval:Interval; mode:BattleMode;
-  currency:string;
+  currency:string; session?:QuoteSession;
   chartPrice:{price:number;kind:'realtime'|'public'|'candle'}|null;
   analysis:Analysis|null; forecast:MarketForecast|null;
 }
@@ -100,7 +101,7 @@ interface SoundControls {
   sound:boolean;toggle:()=>void;audio:BattleAudio;volume:number;changeVolume:(value:number)=>void;
   music:boolean;toggleMusic:()=>void;
 }
-function BattleContent({market,symbol,interval,mode,currency,chartPrice,analysis,forecast,titleId,close,sound,toggle,audio,volume,changeVolume,music,toggleMusic}:Props&SoundControls&{titleId:string;close:()=>void}) {
+function BattleContent({market,symbol,interval,mode,currency,session,chartPrice,analysis,forecast,titleId,close,sound,toggle,audio,volume,changeVolume,music,toggleMusic}:Props&SoundControls&{titleId:string;close:()=>void}) {
   const {t,locale}=useLanguage();
   const amount=(n:number)=>n.toLocaleString(locale,{maximumFractionDigits:2});
   const when=(n:number)=>new Date(n*1000).toLocaleTimeString(locale,{hour12:false});
@@ -118,7 +119,12 @@ function BattleContent({market,symbol,interval,mode,currency,chartPrice,analysis
     if(mode==='cached')return t('缓存价格','Saved price');
     if(mode==='imported')return t('导入价格','Imported price');
     if(mode==='closed')return t('休市价格','Market closed');
-    if(chartPrice?.kind==='realtime')return t('实时报价','Real-time quote');
+    if(chartPrice?.kind==='realtime'){
+      if(session==='overnight')return t('夜盘实时报价','Overnight real-time quote');
+      if(session==='pre')return t('盘前实时报价','Pre-market real-time quote');
+      if(session==='post')return t('盘后实时报价','After-hours real-time quote');
+      return t('实时报价','Real-time quote');
+    }
     if(chartPrice?.kind==='public')return t('最新报价','Latest quote');
     return t('最近K线价格','Last candle price');
   }
@@ -133,8 +139,9 @@ function BattleContent({market,symbol,interval,mode,currency,chartPrice,analysis
   const side=buy===null?null:buy===50?'neutral':buy>50?'long':'short';
   const transportText=state.transport==='live'?t('逐笔实时','Live trades'):state.transport==='snapshot'?t('定时快照','Snapshots'):
     state.transport==='retrying'?t('推送重连中','Reconnecting'):t('连接逐笔推送','Connecting');
+  const sessionLabel=session==='overnight'?t('夜盘','Overnight'):session==='pre'?t('盘前','Pre-market'):session==='post'?t('盘后','After hours'):null;
   const modeLabel=mode==='replay'?t('历史回放','Replay'):mode==='cached'?t('本机缓存','Saved candles'):mode==='imported'?t('导入数据','Imported data'):
-    mode==='closed'?t('休市','Market closed'):mode==='unavailable'?t('K线待更新','Awaiting candles'):null;
+    mode==='closed'?t('休市','Market closed'):mode==='unavailable'?t('K线待更新','Awaiting candles'):sessionLabel;
   const missing=mode==='replay'?t('回放保留当时的K线判断，逐笔成交和盘口没有历史快照。','Replay shows candle evidence at the selected time. Historical trades and depth are unavailable.'):
     mode==='cached'||mode==='imported'?t('当前数据只包含K线，可查看下方的结构和观察点位。','This dataset contains candles only. See structure and price levels below.'):
     !supported?t('此标的可查看K线结构。逐笔成交与盘口目前覆盖 USDT 现货交易对。','Candle evidence is available for this market. Trade flow and depth cover USDT spot pairs.'):
