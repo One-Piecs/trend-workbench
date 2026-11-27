@@ -406,7 +406,7 @@ export default function TerminalChart({candles:loaded, liveBar, snapshotCandles=
             <text x={W-RIGHT+8} y={hover.y+4.5} fill="var(--chart-inverse-ink)" fontSize={hoverPriceFontSize} fontWeight="600" fontFamily="monospace">{hoverPriceLabel}</text>
           </g>
         </>}
-        {(()=>{const label=stamp(selected.time,true),width=Math.max(184,label.length*(locale==='zh-CN'?11:6.5)+24);return <><rect x={Math.max(0,Math.min(W-width,x(hover.index)-width/2))} y={H-29} width={width} height="26" fill="var(--chart-cross-bg)" rx="3"/><text x={Math.max(width/2,Math.min(W-width/2,x(hover.index)))} y={H-12} fill="var(--chart-inverse-ink)" fontSize="12" textAnchor="middle">{label}</text></>;})()}
+        {(()=>{const label=stamp(selected.time,true),textWidth=[...label].reduce((sum,ch)=>sum+(/[^\x00-\xff]/.test(ch)?12:6.5),0),width=Math.max(96,Math.ceil(textWidth)+20);return <><rect x={Math.max(0,Math.min(W-width,x(hover.index)-width/2))} y={H-29} width={width} height="26" fill="var(--chart-cross-bg)" rx="3"/><text x={Math.max(width/2,Math.min(W-width/2,x(hover.index)))} y={H-12} fill="var(--chart-inverse-ink)" fontSize="12" textAnchor="middle">{label}</text></>;})()}
       </g>}
       {!candles.length&&!loading&&<text x={W/2} y={TOP+PH/2} textAnchor="middle" fill="var(--chart-muted)" fontSize="14">{t('行情载入后，将在这里绘制真实走势','Real price history will appear when data loads')}</text>}
     </svg>
